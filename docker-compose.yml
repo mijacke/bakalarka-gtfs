@@ -1,0 +1,88 @@
+services:
+  gtfs-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gtfs-mcp
+    command: ["python", "-m", "server_mcp_gtfs.server.server_tools"]
+    restart: unless-stopped
+    ports:
+      - "8808:8808"
+    volumes:
+      - ./.work:/app/.work
+      - ./data:/app/data:ro
+
+  gtfs-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gtfs-api
+    command: ["python", "-m", "agent_gtfs.api.api_server"]
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      MCP_SERVER_URL: "http://gtfs-mcp:8808/sse"
+      GTFS_API_PORT: "8000"
+    depends_on:
+      - gtfs-mcp
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./.work:/app/.work
+      - ./data:/app/data:ro
+
+  mongodb:
+    image: mongo:7
+    container_name: librechat-mongodb
+    restart: unless-stopped
+    volumes:
+      - librechat_mongodb_data:/data/db
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.11
+    container_name: librechat-meilisearch
+    restart: unless-stopped
+    environment:
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-librechat_master_key_12345}
+    volumes:
+      - librechat_meili_data:/meili_data
+
+  librechat:
+    image: ghcr.io/danny-avila/librechat:latest
+    container_name: librechat
+    restart: unless-stopped
+    depends_on:
+      - mongodb
+      - meilisearch
+      - gtfs-api
+    ports:
+      - "${LIBRECHAT_PORT:-3090}:3080"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3080"
+      APP_TITLE: "GTFS LibreChat"
+      ALLOW_REGISTRATION: "true"
+      ENDPOINTS: ${ENDPOINTS:-custom,openAI,anthropic}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      MONGO_URI: "mongodb://mongodb:27017/LibreChat"
+      MONGO_DB_NAME: "LibreChat"
+      MEILI_HOST: "http://meilisearch:7700"
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-librechat_master_key_12345}
+      JWT_SECRET: ${JWT_SECRET:-0123456789abcdef0123456789abcdef}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-abcdef0123456789abcdef0123456789}
+      SESSION_SECRET: ${SESSION_SECRET:-0123456789abcdef0123456789abcdef}
+      CREDS_KEY: ${CREDS_KEY:-0123456789abcdef0123456789abcdef}
+      CREDS_IV: ${CREDS_IV:-0123456789abcdef}
+    volumes:
+      - ./konfiguracia/librechat/librechat.yaml:/app/librechat.yaml:ro
+      - librechat_images:/app/client/public/images
+      - librechat_uploads:/app/uploads
+
+volumes:
+  librechat_mongodb_data:
+  librechat_meili_data:
+  librechat_images:
+  librechat_uploads:

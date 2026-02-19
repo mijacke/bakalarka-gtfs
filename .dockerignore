@@ -1,0 +1,12 @@
+.git
+.gitignore
+.venv
+.work
+__pycache__
+*.pyc
+*.db
+dist
+build
+*.egg-info
+uv.lock
+konfiguracia/librechat/.env
