@@ -1,0 +1,17 @@
+# Schema verzia je povinna pre LibreChat >= v0.8.3.
+version: "1.3.4"
+
+# Jediný režim: custom GTFS agent.
+# MCP nástroje rieši agent interne cez svoj backend.
+endpoints:
+  custom:
+    - name: "GTFS Agent"
+      apiKey: "gtfs-agent-key"
+      baseURL: "http://gtfs-api:8000/v1"
+      models:
+        default: ["gtfs-agent"]
+        fetch: true
+      titleConvo: true
+      titleModel: "gtfs-agent"
+      summarize: false
+      modelDisplayLabel: "GTFS Agent"
