@@ -12,6 +12,7 @@ Funkcie:
 from __future__ import annotations
 
 import csv
+import io
 import sqlite3
 import zipfile
 from pathlib import Path
@@ -329,11 +330,13 @@ def export_to_gtfs(output_path: str) -> str:
             cursor = conn.execute(f"SELECT {', '.join(cols)} FROM {table}")
             rows = cursor.fetchall()
 
-            lines: list[str] = [",".join(cols)]
+            buffer = io.StringIO(newline="")
+            writer = csv.writer(buffer, lineterminator="\n")
+            writer.writerow(cols)
             for row in rows:
-                values = [str(row[c]) if row[c] is not None else "" for c in cols]
-                lines.append(",".join(values))
-            zf.writestr(txt_file, "\n".join(lines) + "\n")
+                values = [row[c] if row[c] is not None else "" for c in cols]
+                writer.writerow(values)
+            zf.writestr(txt_file, buffer.getvalue())
 
     conn.close()
     return str(out)

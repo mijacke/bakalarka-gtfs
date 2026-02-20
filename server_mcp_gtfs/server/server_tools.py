@@ -13,13 +13,18 @@ Tools:
     2. gtfs_query          — read-only SQL SELECT
     3. gtfs_propose_patch  — diff/preview navrhovanych zmien
     4. gtfs_validate_patch — FK, time ordering, required fields
-    5. gtfs_apply_patch    — aplikacia zmien (atomic transakcia)
+    5. gtfs_apply_patch    — aplikacia zmien (atomic transakcia, signed confirm)
     6. gtfs_export         — export SQLite -> GTFS ZIP
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import os
+import re
+import time
 import traceback
 
 from mcp.server.fastmcp import FastMCP
@@ -42,6 +47,13 @@ mcp = FastMCP(
     port=8808,
 )
 
+CONFIRMATION_SECRET = os.getenv("GTFS_CONFIRMATION_SECRET", "change-me-in-env")
+PATCH_STATE_TTL_SECONDS = int(os.getenv("GTFS_PATCH_STATE_TTL_SECONDS", "1800"))
+CONFIRM_PATTERN = re.compile(r"^/confirm\s+([a-fA-F0-9]{64})$")
+
+# In-memory stav patch workflow (propose -> validate -> apply).
+_PATCH_STATES: dict[str, dict] = {}
+
 
 def _json_response(data: dict | list) -> str:
     """Serializuje odpoved do JSON s peknym formatovanim."""
@@ -51,6 +63,76 @@ def _json_response(data: dict | list) -> str:
 def _error_response(msg: str, detail: str = "") -> str:
     """Generuje chybovu odpoved."""
     return _json_response({"error": msg, "detail": detail})
+
+
+def _patch_hash(patch: dict) -> str:
+    """Stabilny hash patchu (SHA-256 z canonical JSON)."""
+    canonical = json.dumps(patch, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _cleanup_patch_states() -> None:
+    """Odstrani expirovane stavy patchov."""
+    now = time.time()
+    expired_keys = [
+        key
+        for key, value in _PATCH_STATES.items()
+        if now - value.get("created_at", now) > PATCH_STATE_TTL_SECONDS
+    ]
+    for key in expired_keys:
+        _PATCH_STATES.pop(key, None)
+
+
+def _mark_proposed(patch_hash: str) -> None:
+    now = time.time()
+    _PATCH_STATES[patch_hash] = {
+        "created_at": now,
+        "proposed_at": now,
+        "validated_at": None,
+        "validated_ok": False,
+    }
+
+
+def _mark_validated(patch_hash: str, valid: bool) -> None:
+    state = _PATCH_STATES.get(patch_hash)
+    if state is None:
+        return
+    state["validated_at"] = time.time()
+    state["validated_ok"] = bool(valid)
+
+
+def _sign_confirmation_message(message: str) -> str:
+    return hmac.new(
+        CONFIRMATION_SECRET.encode("utf-8"),
+        message.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _validate_confirmation(
+    patch_hash: str,
+    confirmation_message: str,
+    confirmation_signature: str,
+) -> tuple[bool, str]:
+    msg = (confirmation_message or "").strip()
+    sig = (confirmation_signature or "").strip()
+
+    if not msg or not sig:
+        return False, "Chyba explicitne potvrdenie. Pouzi '/confirm <patch_hash>'."
+
+    expected_sig = _sign_confirmation_message(msg)
+    if not hmac.compare_digest(expected_sig, sig):
+        return False, "Neplatny podpis potvrdenia pouzivatela."
+
+    match = CONFIRM_PATTERN.match(msg)
+    if not match:
+        return False, "Neplatny format potvrdenia. Pouzi '/confirm <patch_hash>'."
+
+    confirmed_hash = match.group(1).lower()
+    if confirmed_hash != patch_hash:
+        return False, "Potvrdenie patri k inemu patch_hash."
+
+    return True, ""
 
 
 # ---------------------------------------------------------------------------
@@ -141,8 +223,13 @@ def gtfs_propose_patch(patch_json: str) -> str:
         JSON diff summary s before/after ukazkami.
     """
     try:
+        _cleanup_patch_states()
         patch = parse_patch(patch_json)
         summary = build_diff_summary(patch)
+        patch_hash = _patch_hash(patch)
+        _mark_proposed(patch_hash)
+        summary["patch_hash"] = patch_hash
+        summary["confirm_command"] = f"/confirm {patch_hash}"
         return _json_response(summary)
     except Exception as e:
         return _error_response(str(e), traceback.format_exc())
@@ -166,8 +253,20 @@ def gtfs_validate_patch(patch_json: str) -> str:
         JSON s {valid: bool, errors: [...], warnings: [...]}.
     """
     try:
+        _cleanup_patch_states()
         patch = parse_patch(patch_json)
+        patch_hash = _patch_hash(patch)
+        state = _PATCH_STATES.get(patch_hash)
+        if state is None or not state.get("proposed_at"):
+            return _error_response(
+                "Workflow violation",
+                "Najprv zavolaj gtfs_propose_patch pre rovnaky patch_json.",
+            )
+
         result = validate_patch(patch)
+        _mark_validated(patch_hash, result.get("valid", False))
+        result["patch_hash"] = patch_hash
+        result["confirm_command"] = f"/confirm {patch_hash}"
         return _json_response(result)
     except Exception as e:
         return _error_response(str(e), traceback.format_exc())
@@ -179,20 +278,57 @@ def gtfs_validate_patch(patch_json: str) -> str:
 
 
 @mcp.tool()
-def gtfs_apply_patch(patch_json: str) -> str:
+def gtfs_apply_patch(
+    patch_json: str,
+    confirmation_message: str,
+    confirmation_signature: str,
+) -> str:
     """
     Aplikuje patch na databazu v SQLite transakcii (atomic).
     POZOR: Volaj len po propose_patch + validate_patch + user confirm!
 
     Args:
         patch_json: JSON s operaciami (rovnaky format ako propose/validate)
+        confirmation_message: Posledna user sprava, ktora ma byt vo formate
+            '/confirm <patch_hash>'.
+        confirmation_signature: HMAC SHA-256 podpis confirmation_message.
 
     Returns:
         JSON s {applied: true, affected_rows: {...}}.
     """
     try:
+        _cleanup_patch_states()
         patch = parse_patch(patch_json)
+        patch_hash = _patch_hash(patch)
+
+        state = _PATCH_STATES.get(patch_hash)
+        if state is None or not state.get("proposed_at"):
+            return _error_response(
+                "Workflow violation",
+                "Patch nebol navrhnuty cez gtfs_propose_patch.",
+            )
+        if not state.get("validated_at"):
+            return _error_response(
+                "Workflow violation",
+                "Patch nebol validovany cez gtfs_validate_patch.",
+            )
+        if not state.get("validated_ok"):
+            return _error_response(
+                "Validation failed",
+                "Patch nie je validny. Oprav chyby a validuj znova.",
+            )
+
+        confirmation_ok, detail = _validate_confirmation(
+            patch_hash,
+            confirmation_message,
+            confirmation_signature,
+        )
+        if not confirmation_ok:
+            return _error_response("Missing or invalid confirmation", detail)
+
         result = apply_patch(patch)
+        _PATCH_STATES.pop(patch_hash, None)
+        result["patch_hash"] = patch_hash
         return _json_response(result)
     except Exception as e:
         return _error_response(str(e), traceback.format_exc())

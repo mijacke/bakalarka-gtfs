@@ -107,8 +107,8 @@ def _validate_insert(
     conn: sqlite3.Connection,
     op: dict,
     prefix: str,
-    errors: list,
-    warnings: list,
+    errors: list[str],
+    warnings: list[str],
 ) -> None:
     """Validacia INSERT operacie."""
     table = op["table"]
@@ -142,8 +142,8 @@ def _validate_update(
     conn: sqlite3.Connection,
     op: dict,
     prefix: str,
-    errors: list,
-    warnings: list,
+    errors: list[str],
+    warnings: list[str],
 ) -> None:
     """Validacia UPDATE operacie."""
     table = op["table"]
@@ -183,8 +183,8 @@ def _validate_time_ordering(
     conn: sqlite3.Connection,
     op: dict,
     prefix: str,
-    errors: list,
-    warnings: list,
+    errors: list[str],
+    warnings: list[str],
 ) -> None:
     """
     Kontrola ze po update bude arrival_time <= departure_time
@@ -195,12 +195,12 @@ def _validate_time_ordering(
         return
 
     where, params = _filter_to_where(op["filter"])
-    rows = conn.execute(
-        f"SELECT arrival_time, departure_time FROM stop_times WHERE {where} LIMIT 100",
+    cursor = conn.execute(
+        f"SELECT arrival_time, departure_time FROM stop_times WHERE {where}",
         params,
-    ).fetchall()
+    )
 
-    for row in rows:
+    for row in cursor:
         arr = row["arrival_time"]
         dep = row["departure_time"]
 
@@ -218,19 +218,38 @@ def _validate_time_ordering(
             else:
                 dep = val
 
-        if arr and dep and arr > dep:
-            warnings.append(
+        try:
+            arr_seconds = _gtfs_time_to_seconds(str(arr)) if arr not in (None, "") else None
+            dep_seconds = _gtfs_time_to_seconds(str(dep)) if dep not in (None, "") else None
+        except ValueError as e:
+            errors.append(f"{prefix}: neplatny format casu po update: {e}")
+            break
+
+        if arr_seconds is not None and dep_seconds is not None and arr_seconds > dep_seconds:
+            errors.append(
                 f"{prefix}: po update arrival_time ({arr}) > departure_time ({dep})."
             )
             break
+
+
+def _gtfs_time_to_seconds(time_str: str) -> int:
+    """Prevedie GTFS cas HH:MM:SS (HH moze byt >24) na sekundy."""
+    parts = time_str.split(":")
+    if len(parts) != 3:
+        raise ValueError(f"'{time_str}' (ocakavany format HH:MM:SS)")
+
+    h, m, s = (int(parts[0]), int(parts[1]), int(parts[2]))
+    if m < 0 or m > 59 or s < 0 or s > 59 or h < 0:
+        raise ValueError(f"'{time_str}' (neplatne hodnoty casu)")
+    return h * 3600 + m * 60 + s
 
 
 def _validate_delete(
     conn: sqlite3.Connection,
     op: dict,
     prefix: str,
-    errors: list,
-    warnings: list,
+    errors: list[str],
+    warnings: list[str],
 ) -> None:
     """Validacia DELETE operacie."""
     table = op["table"]
@@ -241,6 +260,22 @@ def _validate_delete(
 
     if count == 0:
         warnings.append(f"{prefix}: filter matchuje 0 riadkov, nic sa nezmaze.")
+
+    # Pri zapnutych FK by tieto operacie pri aplikacii aj tak zlyhali.
+    if table == "trips":
+        affected_trip_ids = conn.execute(
+            f"SELECT trip_id FROM trips WHERE {where}", params
+        ).fetchall()
+        for row in affected_trip_ids:
+            ref_count = conn.execute(
+                "SELECT COUNT(*) as c FROM stop_times WHERE trip_id = ?",
+                [row["trip_id"]],
+            ).fetchone()["c"]
+            if ref_count > 0:
+                errors.append(
+                    f"{prefix}: mazanie trip_id='{row['trip_id']}' blokuje "
+                    f"{ref_count} riadkov v stop_times."
+                )
 
     if table in ("routes", "calendar"):
         child_table = "trips"
@@ -254,7 +289,7 @@ def _validate_delete(
                 [row[col]],
             ).fetchone()["c"]
             if ref_count > 0:
-                warnings.append(
-                    f"{prefix}: mazanie {col}='{row[col]}' ovplyvni "
+                errors.append(
+                    f"{prefix}: mazanie {col}='{row[col]}' blokuje "
                     f"{ref_count} riadkov v {child_table}."
                 )
