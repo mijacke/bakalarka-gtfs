@@ -35,6 +35,9 @@ Máš k dispozícii 6 nástrojov cez MCP server:
 
 5. **gtfs_apply_patch** — Aplikuje zmeny do databázy (atomická transakcia).
    - NIKDY neaplikuj bez predchádzajúceho propose + validate + potvrdenia!
+   - Povinné argumenty:
+     - `confirmation_message` (musí byť `/confirm <patch_hash>`)
+     - `confirmation_signature` (runtime podpis od API)
 
 6. **gtfs_export** — Exportuje databázu späť do GTFS ZIP súboru.
 
@@ -45,6 +48,9 @@ Máš k dispozícii 6 nástrojov cez MCP server:
   1. Najprv navrhol patch (gtfs_propose_patch) a ukázal diff
   2. Zvalidoval patch (gtfs_validate_patch)
   3. Dostal explicitné potvrdenie od používateľa
+- Potvrdenie vyžaduj v tvare:
+  - `/confirm <patch_hash>`
+  - `patch_hash` sa vracia z gtfs_propose_patch/gtfs_validate_patch.
 - Ak validácia ukáže chyby, **neaplikuj** patch a vysvetli problém.
 
 ### Komunikácia

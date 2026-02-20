@@ -14,18 +14,19 @@ LibreChat sa pripaja na http://gtfs-api:8000/v1 (v Docker sieti).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
+import logging
 import time
 import uuid
-import traceback
 
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
 from ..agent.agent_s_mcp import GTFSAgent
-from ..konfiguracia.nastavenia import API_PORT, API_KEY
+from ..konfiguracia.nastavenia import API_PORT, API_KEY, CONFIRMATION_SECRET
 
 # ---------------------------------------------------------------------------
 # FastAPI aplikácia
@@ -36,6 +37,7 @@ app = FastAPI(
     description="OpenAI-kompatibilný endpoint pre GTFS agenta",
     version="0.2.0",
 )
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +100,23 @@ def _unauthorized_response() -> JSONResponse:
     )
 
 
+def _last_user_message(messages: list[dict]) -> str:
+    """Vrati poslednu user spravu (alebo prazdny string)."""
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            return message.get("content", "") or ""
+    return ""
+
+
+def _sign_confirmation_message(message: str) -> str:
+    """Vytvori HMAC SHA-256 podpis potvrdenia, overitelny MCP serverom."""
+    return hmac.new(
+        CONFIRMATION_SECRET.encode("utf-8"),
+        message.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # Endpointy
 # ---------------------------------------------------------------------------
@@ -149,10 +168,22 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
     created = int(time.time())
 
     try:
+        last_user_message = _last_user_message(spravy).strip()
+        confirmation_signature = _sign_confirmation_message(last_user_message)
         agent = GTFSAgent()
-        odpoved = await agent.run(spravy)
-    except Exception as e:
-        odpoved = f"❌ Chyba agenta: {e}\n\n```\n{traceback.format_exc()}\n```"
+        odpoved = await agent.run(
+            spravy,
+            confirmation_message=last_user_message,
+            confirmation_signature=confirmation_signature,
+        )
+    except Exception:
+        error_id = uuid.uuid4().hex[:10]
+        logger.exception("GTFS agent failed (error_id=%s)", error_id)
+        odpoved = (
+            "❌ Interna chyba agenta.\n"
+            f"ID chyby: {error_id}\n"
+            "Skus poziadavku zopakovat."
+        )
 
     if chat_request.stream:
         return StreamingResponse(

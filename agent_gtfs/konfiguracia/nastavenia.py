@@ -20,3 +20,6 @@ API_PORT = int(os.getenv("GTFS_API_PORT", "8000"))
 
 # API kľúč (ľubovoľný — slúži len na autentifikáciu z LibreChat)
 API_KEY = os.getenv("GTFS_API_KEY", "gtfs-agent-key")
+
+# Shared secret pre podpis explicitneho user potvrdenia apply kroku
+CONFIRMATION_SECRET = os.getenv("GTFS_CONFIRMATION_SECRET", "change-me-in-env")

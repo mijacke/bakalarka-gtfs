@@ -14,6 +14,8 @@ Použitie:
 
 from __future__ import annotations
 
+import json
+
 from agents import Agent, Runner
 from agents.mcp import MCPServerSse
 
@@ -39,7 +41,25 @@ class GTFSAgent:
         self.mcp_url = mcp_url
         self.model = model
 
-    async def run(self, vstup: str | list[dict]) -> str:
+    @staticmethod
+    def _compose_instructions(confirmation_message: str, confirmation_signature: str) -> str:
+        """Doplni runtime kontext pre server-side potvrdenie apply kroku."""
+        runtime_context = (
+            "\n\n## Runtime confirmation context (secured by API)\n"
+            "- Pri volani gtfs_apply_patch MUSIS pouzit tieto 2 hodnoty bez zmeny:\n"
+            f"- confirmation_message: {json.dumps(confirmation_message, ensure_ascii=False)}\n"
+            f"- confirmation_signature: {confirmation_signature}\n"
+            "- Server aplikuje patch len ak confirmation_message je presne "
+            "'/confirm <patch_hash>' a podpis sedi."
+        )
+        return SYSTEM_PROMPT + runtime_context
+
+    async def run(
+        self,
+        vstup: str | list[dict],
+        confirmation_message: str = "",
+        confirmation_signature: str = "",
+    ) -> str:
         """
         Spustí agenta a vráti finálnu odpoveď.
 
@@ -61,10 +81,14 @@ class GTFSAgent:
         )
 
         async with mcp_server:
+            instructions = self._compose_instructions(
+                confirmation_message=confirmation_message,
+                confirmation_signature=confirmation_signature,
+            )
             agent = Agent(
                 name="GTFSAgent",
                 model=self.model,
-                instructions=SYSTEM_PROMPT,
+                instructions=instructions,
                 mcp_servers=[mcp_server],
             )
 
