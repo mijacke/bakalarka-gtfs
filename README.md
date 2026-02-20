@@ -66,8 +66,11 @@ Runtime je nastavene primarne na Docker Desktop (bez lokalneho CLI workflow).
 ## Timing footer v odpovedi
 
 - API vie na koniec odpovede pridat nenapadny timing footer pod ciarou:
-  - `cas rozmyslania`
-  - `celkovy cas odpovede`
+  - `celkovy cas rozmyslania`
+  - profiling rozpad:
+    - `model`
+    - `db/mcp`
+    - `python`
 - Zapnutie/vypnutie:
   - `.env`: `GTFS_SHOW_TIMING_FOOTER=true|false`
 
