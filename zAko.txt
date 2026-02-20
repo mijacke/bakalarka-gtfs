@@ -1,7 +1,0 @@
-LibreChat (UI)
- -> custom endpoint "GTFS Agent" (/v1)
- -> GTFS Agent API (FastAPI)
- -> GTFSAgent (OpenAI Agents SDK)
- -> MCP server (SSE, 6 GTFS tools)
- -> SQLite DB (.work/datasets/current.db)
- -> export do GTFS ZIP
