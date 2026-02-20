@@ -29,6 +29,7 @@ from ..konfiguracia.nastavenia import (
     API_PORT,
     API_KEY,
     CONFIRMATION_SECRET,
+    ENABLE_TRACE_LOGS,
     SHOW_TIMING_FOOTER,
 )
 
@@ -42,6 +43,11 @@ app = FastAPI(
     version="0.2.0",
 )
 logger = logging.getLogger(__name__)
+AGENT = GTFSAgent()
+
+if ENABLE_TRACE_LOGS:
+    logging.getLogger("uvicorn.error").setLevel(logging.INFO)
+    logger = logging.getLogger("uvicorn.error")
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +139,45 @@ def _format_timing_footer(thinking_seconds: float, total_seconds: float) -> str:
     )
 
 
+def _extract_trace_id(request: Request, fallback: str) -> str:
+    """Získa trace id z bežných hlavičiek (LibreChat / proxy), inak fallback."""
+    for header in (
+        "x-trace-id",
+        "x-request-id",
+        "x-correlation-id",
+        "x-librechat-message-id",
+    ):
+        value = request.headers.get(header)
+        if value:
+            return value.strip()
+    return fallback
+
+
+def _build_response_headers(
+    trace_id: str,
+    thinking_seconds: float | None = None,
+    total_seconds: float | None = None,
+) -> dict[str, str]:
+    """Technické hlavičky pre tracing/latenciu bez rušenia obsahu chatu."""
+    headers = {"x-gtfs-trace-id": trace_id}
+    if thinking_seconds is not None:
+        headers["x-gtfs-thinking-ms"] = str(int(round(thinking_seconds * 1000)))
+    if total_seconds is not None:
+        headers["x-gtfs-total-ms"] = str(int(round(total_seconds * 1000)))
+    return headers
+
+
+def _trace_log(message: str, *args) -> None:
+    """Log trace správy; fallback cez print pre docker logs."""
+    if not ENABLE_TRACE_LOGS:
+        return
+    try:
+        rendered = message % args if args else message
+        print(rendered, flush=True)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Endpointy
 # ---------------------------------------------------------------------------
@@ -182,15 +227,23 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
+    trace_id = _extract_trace_id(request, fallback=completion_id)
     request_started_at = time.perf_counter()
     thinking_started_at = time.perf_counter()
     thinking_seconds = 0.0
 
+    _trace_log(
+        "GTFS chat start trace_id=%s stream=%s model=%s messages=%d",
+        trace_id,
+        chat_request.stream,
+        chat_request.model,
+        len(spravy),
+    )
+
     try:
         last_user_message = _last_user_message(spravy).strip()
         confirmation_signature = _sign_confirmation_message(last_user_message)
-        agent = GTFSAgent()
-        odpoved = await agent.run(
+        odpoved = await AGENT.run(
             spravy,
             confirmation_message=last_user_message,
             confirmation_signature=confirmation_signature,
@@ -207,6 +260,11 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
         )
 
     if chat_request.stream:
+        _trace_log(
+            "GTFS chat thinking_done trace_id=%s thinking_ms=%d",
+            trace_id,
+            int(round(thinking_seconds * 1000)),
+        )
         return StreamingResponse(
             _stream_odpoved(
                 text=odpoved,
@@ -214,8 +272,13 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
                 created=created,
                 request_started_at=request_started_at,
                 thinking_seconds=thinking_seconds,
+                trace_id=trace_id,
             ),
             media_type="text/event-stream",
+            headers=_build_response_headers(
+                trace_id=trace_id,
+                thinking_seconds=thinking_seconds,
+            ),
         )
 
     total_seconds = time.perf_counter() - request_started_at
@@ -225,7 +288,15 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
             total_seconds=total_seconds,
         )
 
-    return {
+    _trace_log(
+        "GTFS chat done trace_id=%s thinking_ms=%d total_ms=%d stream=%s",
+        trace_id,
+        int(round(thinking_seconds * 1000)),
+        int(round(total_seconds * 1000)),
+        chat_request.stream,
+    )
+
+    payload = {
         "id": completion_id,
         "object": "chat.completion",
         "created": created,
@@ -247,6 +318,14 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
             "total_response_seconds": round(total_seconds, 3),
         },
     }
+    return JSONResponse(
+        content=payload,
+        headers=_build_response_headers(
+            trace_id=trace_id,
+            thinking_seconds=thinking_seconds,
+            total_seconds=total_seconds,
+        ),
+    )
 
 
 async def _stream_odpoved(
@@ -255,6 +334,7 @@ async def _stream_odpoved(
     created: int,
     request_started_at: float,
     thinking_seconds: float,
+    trace_id: str,
 ):
     """Streamuje odpoveď po slovách v OpenAI chunk formáte."""
     slova = text.split(" ")
@@ -295,6 +375,14 @@ async def _stream_odpoved(
             ],
         }
         yield f"data: {json.dumps(footer_chunk)}\n\n"
+
+    total_seconds = time.perf_counter() - request_started_at
+    _trace_log(
+        "GTFS chat stream_done trace_id=%s thinking_ms=%d total_ms=%d",
+        trace_id,
+        int(round(thinking_seconds * 1000)),
+        int(round(total_seconds * 1000)),
+    )
 
     # Finálny chunk
     final = {

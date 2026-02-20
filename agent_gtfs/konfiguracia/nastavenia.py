@@ -31,3 +31,11 @@ SHOW_TIMING_FOOTER = os.getenv("GTFS_SHOW_TIMING_FOOTER", "true").strip().lower(
     "yes",
     "on",
 }
+
+# Zapnut request trace logy (prepojenie s LibreChat headers)
+ENABLE_TRACE_LOGS = os.getenv("GTFS_ENABLE_TRACE_LOGS", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
