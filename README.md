@@ -63,6 +63,14 @@ Runtime je nastavene primarne na Docker Desktop (bez lokalneho CLI workflow).
 - Podpis potvrdenia sa overuje cez shared secret:
   - `.env`: `GTFS_CONFIRMATION_SECRET`
 
+## Timing footer v odpovedi
+
+- API vie na koniec odpovede pridat nenapadny timing footer pod ciarou:
+  - `cas rozmyslania`
+  - `celkovy cas odpovede`
+- Zapnutie/vypnutie:
+  - `.env`: `GTFS_SHOW_TIMING_FOOTER=true|false`
+
 ## Overenie autorizacie (realny test)
 
 - Testovane 19.02.2026 proti `http://127.0.0.1:8000/v1/models`:
