@@ -17,20 +17,23 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import time
 import uuid
 
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
+from agents.exceptions import MaxTurnsExceeded
 
-from ..agent.agent_s_mcp import GTFSAgent
+from ..agent.agent_s_mcp import GTFSAgent, AgentProfiling
 from ..konfiguracia.nastavenia import (
     API_PORT,
     API_KEY,
     CONFIRMATION_SECRET,
     ENABLE_TRACE_LOGS,
     SHOW_TIMING_FOOTER,
+    AGENT_MAX_TURNS,
 )
 
 # ---------------------------------------------------------------------------
@@ -43,7 +46,8 @@ app = FastAPI(
     version="0.2.0",
 )
 logger = logging.getLogger(__name__)
-AGENT = GTFSAgent()
+AGENT = GTFSAgent(max_turns=AGENT_MAX_TURNS)
+_CONFIRM_MESSAGE_PATTERN = re.compile(r"^/confirm\s+[a-fA-F0-9]{64}$")
 
 if ENABLE_TRACE_LOGS:
     logging.getLogger("uvicorn.error").setLevel(logging.INFO)
@@ -127,15 +131,17 @@ def _sign_confirmation_message(message: str) -> str:
     ).hexdigest()
 
 
-def _format_timing_footer(thinking_seconds: float, total_seconds: float) -> str:
+def _format_timing_footer(profiling: AgentProfiling) -> str:
     """
     Format casov pre nenapadny footer pod odpovedou.
     Zobrazuje sa pod ciarou, aby co najmenej rusil chat.
     """
     return (
         "\n\n---\n"
-        f"_čas rozmýšľania: {thinking_seconds:.2f} s | "
-        f"celkový čas odpovede: {total_seconds:.2f} s_"
+        f"_celkový čas rozmýšľania: {profiling.thinking_seconds:.2f} s_\n"
+        f"_profiling: model {profiling.model_seconds:.2f} s | "
+        f"db/mcp {profiling.db_mcp_seconds:.2f} s | "
+        f"python {profiling.python_overhead_seconds:.2f} s_"
     )
 
 
@@ -155,15 +161,15 @@ def _extract_trace_id(request: Request, fallback: str) -> str:
 
 def _build_response_headers(
     trace_id: str,
-    thinking_seconds: float | None = None,
-    total_seconds: float | None = None,
+    profiling: AgentProfiling | None = None,
 ) -> dict[str, str]:
     """Technické hlavičky pre tracing/latenciu bez rušenia obsahu chatu."""
     headers = {"x-gtfs-trace-id": trace_id}
-    if thinking_seconds is not None:
-        headers["x-gtfs-thinking-ms"] = str(int(round(thinking_seconds * 1000)))
-    if total_seconds is not None:
-        headers["x-gtfs-total-ms"] = str(int(round(total_seconds * 1000)))
+    if profiling is not None:
+        headers["x-gtfs-thinking-ms"] = str(int(round(profiling.thinking_seconds * 1000)))
+        headers["x-gtfs-model-ms"] = str(int(round(profiling.model_seconds * 1000)))
+        headers["x-gtfs-db-mcp-ms"] = str(int(round(profiling.db_mcp_seconds * 1000)))
+        headers["x-gtfs-python-ms"] = str(int(round(profiling.python_overhead_seconds * 1000)))
     return headers
 
 
@@ -228,9 +234,15 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
     trace_id = _extract_trace_id(request, fallback=completion_id)
-    request_started_at = time.perf_counter()
     thinking_started_at = time.perf_counter()
-    thinking_seconds = 0.0
+    profiling = AgentProfiling(
+        thinking_seconds=0.0,
+        model_seconds=0.0,
+        db_mcp_seconds=0.0,
+        python_overhead_seconds=0.0,
+        llm_calls=0,
+        tool_calls=0,
+    )
 
     _trace_log(
         "GTFS chat start trace_id=%s stream=%s model=%s messages=%d",
@@ -242,15 +254,42 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
 
     try:
         last_user_message = _last_user_message(spravy).strip()
+        if _CONFIRM_MESSAGE_PATTERN.match(last_user_message):
+            # V confirm mode neposielaj cely chat, aby sa agent zbytocne
+            # nevracal k navrhovaniu noveho patchu.
+            spravy = [{"role": "user", "content": last_user_message}]
         confirmation_signature = _sign_confirmation_message(last_user_message)
-        odpoved = await AGENT.run(
+        odpoved, profiling = await AGENT.run_with_profiling(
             spravy,
             confirmation_message=last_user_message,
             confirmation_signature=confirmation_signature,
         )
+    except MaxTurnsExceeded:
         thinking_seconds = time.perf_counter() - thinking_started_at
+        profiling = AgentProfiling(
+            thinking_seconds=thinking_seconds,
+            model_seconds=0.0,
+            db_mcp_seconds=0.0,
+            python_overhead_seconds=thinking_seconds,
+            llm_calls=0,
+            tool_calls=0,
+        )
+        odpoved = (
+            "Postup sa zastavil, pretoze agent prekrocil limit internych krokov. "
+            "Skuste prosim upresnit patch filter jednoduchsie (napr. jeden route_id, "
+            "presny casovy interval, bez alternativnych variantov) a zopakovat krok "
+            "`propose + validate`."
+        )
     except Exception:
         thinking_seconds = time.perf_counter() - thinking_started_at
+        profiling = AgentProfiling(
+            thinking_seconds=thinking_seconds,
+            model_seconds=0.0,
+            db_mcp_seconds=0.0,
+            python_overhead_seconds=thinking_seconds,
+            llm_calls=0,
+            tool_calls=0,
+        )
         error_id = uuid.uuid4().hex[:10]
         logger.exception("GTFS agent failed (error_id=%s)", error_id)
         odpoved = (
@@ -261,38 +300,38 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
 
     if chat_request.stream:
         _trace_log(
-            "GTFS chat thinking_done trace_id=%s thinking_ms=%d",
+            "GTFS chat thinking_done trace_id=%s thinking_ms=%d model_ms=%d db_mcp_ms=%d python_ms=%d",
             trace_id,
-            int(round(thinking_seconds * 1000)),
+            int(round(profiling.thinking_seconds * 1000)),
+            int(round(profiling.model_seconds * 1000)),
+            int(round(profiling.db_mcp_seconds * 1000)),
+            int(round(profiling.python_overhead_seconds * 1000)),
         )
         return StreamingResponse(
             _stream_odpoved(
                 text=odpoved,
                 completion_id=completion_id,
                 created=created,
-                request_started_at=request_started_at,
-                thinking_seconds=thinking_seconds,
+                profiling=profiling,
                 trace_id=trace_id,
             ),
             media_type="text/event-stream",
             headers=_build_response_headers(
                 trace_id=trace_id,
-                thinking_seconds=thinking_seconds,
+                profiling=profiling,
             ),
         )
 
-    total_seconds = time.perf_counter() - request_started_at
     if SHOW_TIMING_FOOTER:
-        odpoved = odpoved + _format_timing_footer(
-            thinking_seconds=thinking_seconds,
-            total_seconds=total_seconds,
-        )
+        odpoved = odpoved + _format_timing_footer(profiling=profiling)
 
     _trace_log(
-        "GTFS chat done trace_id=%s thinking_ms=%d total_ms=%d stream=%s",
+        "GTFS chat done trace_id=%s thinking_ms=%d model_ms=%d db_mcp_ms=%d python_ms=%d stream=%s",
         trace_id,
-        int(round(thinking_seconds * 1000)),
-        int(round(total_seconds * 1000)),
+        int(round(profiling.thinking_seconds * 1000)),
+        int(round(profiling.model_seconds * 1000)),
+        int(round(profiling.db_mcp_seconds * 1000)),
+        int(round(profiling.python_overhead_seconds * 1000)),
         chat_request.stream,
     )
 
@@ -314,16 +353,19 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
             "total_tokens": 0,
         },
         "gtfs_timing": {
-            "thinking_seconds": round(thinking_seconds, 3),
-            "total_response_seconds": round(total_seconds, 3),
+            "total_thinking_seconds": round(profiling.thinking_seconds, 3),
+            "model_seconds": round(profiling.model_seconds, 3),
+            "db_mcp_seconds": round(profiling.db_mcp_seconds, 3),
+            "python_overhead_seconds": round(profiling.python_overhead_seconds, 3),
+            "llm_calls": profiling.llm_calls,
+            "tool_calls": profiling.tool_calls,
         },
     }
     return JSONResponse(
         content=payload,
         headers=_build_response_headers(
             trace_id=trace_id,
-            thinking_seconds=thinking_seconds,
-            total_seconds=total_seconds,
+            profiling=profiling,
         ),
     )
 
@@ -332,8 +374,7 @@ async def _stream_odpoved(
     text: str,
     completion_id: str,
     created: int,
-    request_started_at: float,
-    thinking_seconds: float,
+    profiling: AgentProfiling,
     trace_id: str,
 ):
     """Streamuje odpoveď po slovách v OpenAI chunk formáte."""
@@ -356,11 +397,7 @@ async def _stream_odpoved(
         yield f"data: {json.dumps(chunk)}\n\n"
 
     if SHOW_TIMING_FOOTER:
-        total_seconds = time.perf_counter() - request_started_at
-        footer_text = _format_timing_footer(
-            thinking_seconds=thinking_seconds,
-            total_seconds=total_seconds,
-        )
+        footer_text = _format_timing_footer(profiling=profiling)
         footer_chunk = {
             "id": completion_id,
             "object": "chat.completion.chunk",
@@ -376,12 +413,13 @@ async def _stream_odpoved(
         }
         yield f"data: {json.dumps(footer_chunk)}\n\n"
 
-    total_seconds = time.perf_counter() - request_started_at
     _trace_log(
-        "GTFS chat stream_done trace_id=%s thinking_ms=%d total_ms=%d",
+        "GTFS chat stream_done trace_id=%s thinking_ms=%d model_ms=%d db_mcp_ms=%d python_ms=%d",
         trace_id,
-        int(round(thinking_seconds * 1000)),
-        int(round(total_seconds * 1000)),
+        int(round(profiling.thinking_seconds * 1000)),
+        int(round(profiling.model_seconds * 1000)),
+        int(round(profiling.db_mcp_seconds * 1000)),
+        int(round(profiling.python_overhead_seconds * 1000)),
     )
 
     # Finálny chunk

@@ -15,6 +15,7 @@ Použitie:
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -25,7 +26,9 @@ from agents.lifecycle import RunHooksBase
 from agents.mcp import MCPServerSse
 
 from .systemove_instrukcie import SYSTEM_PROMPT
-from ..konfiguracia.nastavenia import MCP_SERVER_URL, AGENT_MODEL
+from ..konfiguracia.nastavenia import MCP_SERVER_URL, AGENT_MODEL, AGENT_MAX_TURNS
+
+_CONFIRM_MESSAGE_PATTERN = re.compile(r"^/confirm\s+[a-fA-F0-9]{64}$")
 
 
 @dataclass
@@ -98,9 +101,11 @@ class GTFSAgent:
         self,
         mcp_url: str = MCP_SERVER_URL,
         model: str = AGENT_MODEL,
+        max_turns: int = AGENT_MAX_TURNS,
     ):
         self.mcp_url = mcp_url
         self.model = model
+        self.max_turns = max(1, int(max_turns))
 
     @staticmethod
     def _compose_instructions(confirmation_message: str, confirmation_signature: str) -> str:
@@ -113,6 +118,13 @@ class GTFSAgent:
             "- Server aplikuje patch len ak confirmation_message je presne "
             "'/confirm <patch_hash>' a podpis sedi."
         )
+        if _CONFIRM_MESSAGE_PATTERN.match((confirmation_message or "").strip()):
+            runtime_context += (
+                "\n- CONFIRM rezim: NEROB novy propose/validate, "
+                "okamzite volaj gtfs_apply_patch presne raz.\n"
+                "- V CONFIRM rezime pouzi patch_json: \"{}\" "
+                "(server aplikuje patch podla potvrdeneho hashu)."
+            )
         return SYSTEM_PROMPT + runtime_context
 
     async def run(
@@ -168,7 +180,12 @@ class GTFSAgent:
             )
             hooks = _ProfilingHooks()
             started_at = time.perf_counter()
-            result = await Runner.run(agent, input=vstup, hooks=hooks)
+            result = await Runner.run(
+                agent,
+                input=vstup,
+                hooks=hooks,
+                max_turns=self.max_turns,
+            )
             thinking_seconds = max(0.0, time.perf_counter() - started_at)
             profiling = hooks.to_profiling(thinking_seconds=thinking_seconds)
             return result.final_output, profiling

@@ -15,6 +15,9 @@ MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8808/sse")
 # OpenAI model pre agenta
 AGENT_MODEL = os.getenv("GTFS_AGENT_MODEL", "gpt-5-mini")
 
+# Maximalny pocet internych turnov agenta (LLM/tool iteracii na 1 odpoved)
+AGENT_MAX_TURNS = int(os.getenv("GTFS_AGENT_MAX_TURNS", "20"))
+
 # Port pre API server
 API_PORT = int(os.getenv("GTFS_API_PORT", "8000"))
 
