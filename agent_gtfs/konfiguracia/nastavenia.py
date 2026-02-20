@@ -23,3 +23,11 @@ API_KEY = os.getenv("GTFS_API_KEY", "gtfs-agent-key")
 
 # Shared secret pre podpis explicitneho user potvrdenia apply kroku
 CONFIRMATION_SECRET = os.getenv("GTFS_CONFIRMATION_SECRET", "change-me-in-env")
+
+# Zobrazit timing footer pod odpovedou (pod ciarou) pre potreby evaluacie
+SHOW_TIMING_FOOTER = os.getenv("GTFS_SHOW_TIMING_FOOTER", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}

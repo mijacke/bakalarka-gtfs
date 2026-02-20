@@ -13,7 +13,6 @@ LibreChat sa pripaja na http://gtfs-api:8000/v1 (v Docker sieti).
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 import json
@@ -26,7 +25,12 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
 from ..agent.agent_s_mcp import GTFSAgent
-from ..konfiguracia.nastavenia import API_PORT, API_KEY, CONFIRMATION_SECRET
+from ..konfiguracia.nastavenia import (
+    API_PORT,
+    API_KEY,
+    CONFIRMATION_SECRET,
+    SHOW_TIMING_FOOTER,
+)
 
 # ---------------------------------------------------------------------------
 # FastAPI aplikácia
@@ -117,6 +121,18 @@ def _sign_confirmation_message(message: str) -> str:
     ).hexdigest()
 
 
+def _format_timing_footer(thinking_seconds: float, total_seconds: float) -> str:
+    """
+    Format casov pre nenapadny footer pod odpovedou.
+    Zobrazuje sa pod ciarou, aby co najmenej rusil chat.
+    """
+    return (
+        "\n\n---\n"
+        f"_čas rozmýšľania: {thinking_seconds:.2f} s | "
+        f"celkový čas odpovede: {total_seconds:.2f} s_"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Endpointy
 # ---------------------------------------------------------------------------
@@ -166,6 +182,9 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
+    request_started_at = time.perf_counter()
+    thinking_started_at = time.perf_counter()
+    thinking_seconds = 0.0
 
     try:
         last_user_message = _last_user_message(spravy).strip()
@@ -176,7 +195,9 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
             confirmation_message=last_user_message,
             confirmation_signature=confirmation_signature,
         )
+        thinking_seconds = time.perf_counter() - thinking_started_at
     except Exception:
+        thinking_seconds = time.perf_counter() - thinking_started_at
         error_id = uuid.uuid4().hex[:10]
         logger.exception("GTFS agent failed (error_id=%s)", error_id)
         odpoved = (
@@ -187,8 +208,21 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
 
     if chat_request.stream:
         return StreamingResponse(
-            _stream_odpoved(odpoved, completion_id, created),
+            _stream_odpoved(
+                text=odpoved,
+                completion_id=completion_id,
+                created=created,
+                request_started_at=request_started_at,
+                thinking_seconds=thinking_seconds,
+            ),
             media_type="text/event-stream",
+        )
+
+    total_seconds = time.perf_counter() - request_started_at
+    if SHOW_TIMING_FOOTER:
+        odpoved = odpoved + _format_timing_footer(
+            thinking_seconds=thinking_seconds,
+            total_seconds=total_seconds,
         )
 
     return {
@@ -208,11 +242,19 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
             "completion_tokens": 0,
             "total_tokens": 0,
         },
+        "gtfs_timing": {
+            "thinking_seconds": round(thinking_seconds, 3),
+            "total_response_seconds": round(total_seconds, 3),
+        },
     }
 
 
 async def _stream_odpoved(
-    text: str, completion_id: str, created: int
+    text: str,
+    completion_id: str,
+    created: int,
+    request_started_at: float,
+    thinking_seconds: float,
 ):
     """Streamuje odpoveď po slovách v OpenAI chunk formáte."""
     slova = text.split(" ")
@@ -232,7 +274,27 @@ async def _stream_odpoved(
             ],
         }
         yield f"data: {json.dumps(chunk)}\n\n"
-        await asyncio.sleep(0.02)
+
+    if SHOW_TIMING_FOOTER:
+        total_seconds = time.perf_counter() - request_started_at
+        footer_text = _format_timing_footer(
+            thinking_seconds=thinking_seconds,
+            total_seconds=total_seconds,
+        )
+        footer_chunk = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": "gtfs-agent",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": footer_text},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        yield f"data: {json.dumps(footer_chunk)}\n\n"
 
     # Finálny chunk
     final = {
