@@ -10,7 +10,7 @@ Prvý patch preview bez aplikácie
 Overiť návrh patchu a validáciu bez mutácie databázy.
 
 ## Prompt(y) — posielaj po jednom v poradí
-1. `Komunikuj po slovensky a používaj slovenskú diakritiku. Nájdite 1 konkrétny trip_id. Navrhnite patch, ktorý posunie arrival_time aj departure_time o +1 min len pre tento trip. Urob iba propose a validate, bez apply.`
+1. `Nájdite 1 konkrétny trip_id. Navrhnite patch, ktorý posunie arrival_time aj departure_time o +1 min len pre tento trip. Urob iba propose a validate, bez apply.`
 2. `Vráť patch_hash a presný confirm príkaz.`
 
 ## Očakávané správanie

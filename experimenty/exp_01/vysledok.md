@@ -1,11 +1,10 @@
 # Výsledok experimentu
 
 ## Metadata
-- Dátum:
-- Čas:
-- Testovaný model:
-- Endpoint (GTFS Agent/OpenAI/Anthropic):
-- Verzia kódu (git commit):
+- Testovaný model: gpt-5-mini
+- Endpoint (GTFS Agent/OpenAI/Anthropic): GTFS Agent
+- Čas rozmýšľania (s):
+- Čas celkovej odpovede (s):
 
 ## Vstup
 - Použité prompt(y):

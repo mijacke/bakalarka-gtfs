@@ -1,4 +1,4 @@
-# Zhodnotenie exp_02
+# Zhodnotenie exp_02 (re-test po fix-e)
 
 ## Čo bolo požadované
 - Nájsť 5 liniek s najvyšším počtom tripov.
@@ -7,22 +7,21 @@
 - Ostať v read-only režime.
 
 ## Čo agent splnil
-- Vypísal TOP 5 liniek podľa počtu tripov s požadovanými poľami.
-- Ku každej linke doplnil stručnú interpretáciu.
+- Vypísal TOP 5 liniek s požadovanými poľami a správnym formátom.
+- Pridal poznámku, že `(nie je)` znamená `NULL` v dátach.
+- Pri interpretáciách jasne označil text ako `Interpretácia (odhad)`.
 - Nevykonal patch, validáciu, apply ani export.
 
 ## Čo agent nesplnil alebo bolo slabšie
-- Interpretačné vety sú miestami špekulatívne (napr. odhady dopytu), bez explicitného podkladu v poskytnutých dátach.
-- Pri prázdnom `route_long_name` nepridal upozornenie na možnú limitáciu interpretácie.
+- Odhady sú síce označené, ale miestami stále obsahujú kauzálne domnienky.
 
 ## Čo v odpovedi chýba (nie je chyba agenta)
 - Chýbajú metadáta testu (dátum, čas, model, commit).
 - Chýbajú výkonové metriky (latencia, tokeny/cena).
 
 ## Interpretácia pre bakalárku
-- Model spoľahlivo zvláda read-only SQL analytiku.
-- Pri textovej interpretácii je potrebné počítať s rizikom miernej „nad-interpretácie“.
-- Tento experiment je vhodný do kapitoly o kompromisoch medzi analytickou správnosťou a naratívnym vysvetľovaním.
+- Fix splnil cieľ: lepšie oddelenie faktov od odhadov a nižšie riziko „tichej“ halucinácie.
+- Model je vhodný na read-only analytiku, ak sa pri interpretácii udrží explicitné označenie odhadov.
 
 ## Verdikt
-- Experiment hodnotiť ako `úspešný` s poznámkou o strednom riziku interpretačných domnienok.
+- Experiment hodnotiť ako `úspešný`.

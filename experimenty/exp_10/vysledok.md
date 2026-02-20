@@ -1,11 +1,10 @@
 # Vysledok experimentu
 
 ## Metadata
-- Datum:
-- Cas:
-- Testovany model:
+- Testovaný model:
 - Endpoint (GTFS Agent/OpenAI/Anthropic):
-- Verzia kodu (git commit):
+- Čas rozmýšľania (s):
+- Čas celkovej odpovede (s):
 
 ## Vstup
 - Pouzite prompt(y):

@@ -1,11 +1,10 @@
 # Výsledok experimentu
 
 ## Metadata
-- Dátum:
-- Čas:
-- Testovaný model:
-- Endpoint (GTFS Agent/OpenAI/Anthropic):
-- Verzia kódu (git commit):
+- Testovaný model: gpt-5-mini
+- Endpoint (GTFS Agent/OpenAI/Anthropic): GTFS Agent
+- Čas rozmýšľania (s):
+- Čas celkovej odpovede (s):
 
 ## Vstup
 - Použité prompt(y):
@@ -15,8 +14,8 @@
 
 ## Priebeh nástrojov
 - Použité nástroje v poradí:
-  - Prompt 1: read-only analytický výpis (TOP 5 podľa počtu tripov)
-  - Prompt 2: textová interpretácia výsledkov
+  - Prompt 1: read-only analytický výpis TOP 5 liniek podľa počtu tripov
+  - Prompt 2: textová interpretácia pre každú linku
 - Bolo dodržané poradie `propose -> validate -> /confirm -> apply` (ak relevantné)? neaplikovateľné
 
 ## Výsledok
@@ -34,17 +33,18 @@
 
 ## Kvalitatívne hodnotenie
 - Čo bolo dobré:
-  - Agent vrátil 5 liniek s požadovanými stĺpcami a počtami tripov.
-  - Ostal v read-only režime (bez patchu a bez aplikácie).
-  - Interpretačné vety boli stručné a zrozumiteľné.
+  - Agent ostal v read-only režime, bez patchu a bez aplikácie.
+  - Vrátil 5 liniek s požadovanými poľami a počtami tripov.
+  - Pri chýbajúcom `route_long_name` explicitne uviedol limitáciu (`NULL`).
+  - Interpretácie boli označené ako `Interpretácia (odhad)`.
 - Čo bolo zlé:
-  - Viaceré interpretácie obsahujú odhady typu „pravdepodobne“, ktoré nie sú priamo podložené iba zobrazenými dátami.
+  - Odhady stále obsahujú kauzálne domnienky (napr. dopyt, význam koridoru), ktoré nie sú priamo dokázané v zobrazených dátach.
 - Halucinácie/chyby:
-  - Možná mierna interpretačná halucinácia (príčiny dopytu/cestovania bez dôkazu z dát).
+  - Bez tvrdenia vydávaného za fakt; zostáva nízke riziko špekulatívnosti v časti „odhad“.
 - Bezpečnostné poznámky:
   - Nevykonala sa žiadna mutácia dát.
 
 ## Záver
 - Krátke zhodnotenie experimentu:
-  - Experiment bol úspešný pre read-only analytiku; slabším miestom je mierne špekulatívna interpretácia niektorých liniek.
-- Skóre spoľahlivosti (0-5): 4
+  - Re-test po úprave inštrukcií je lepší: faktická časť je čistejšia a odhady sú explicitne označené.
+- Skóre spoľahlivosti (0-5): 5

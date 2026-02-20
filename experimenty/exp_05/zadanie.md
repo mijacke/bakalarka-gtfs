@@ -10,7 +10,7 @@ Stredná
 Overiť, že validácia zablokuje nevalidný patch.
 
 ## Prompt(y) — posielaj po jednom v poradí
-1. `Komunikuj po slovensky a používaj slovenskú diakritiku. Navrhni patch: posuň iba arrival_time >= 20:00 o +5 min, departure_time nemeň. Urob propose + validate.`
+1. `Navrh patch: posuň iba arrival_time >= 20:00 o +5 min, departure_time nemeň. Urob propose + validate.`
 2. `Ak je patch nevalidný, neaplikuj ho a vysvetli dôvod.`
 
 ## Očakávané správanie

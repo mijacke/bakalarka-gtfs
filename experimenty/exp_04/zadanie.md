@@ -10,7 +10,7 @@ Stredná
 Overiť kompletný bezpečný workflow vrátane explicitného potvrdenia.
 
 ## Prompt(y) — posielaj po jednom v poradí
-1. `Komunikuj po slovensky a používaj slovenskú diakritiku. Nájdite 1 trip a navrhnite zmenu arrival_time aj departure_time o +1 min. Sprav propose + validate a počkaj na potvrdenie.`
+1. `Nájdi 1 trip a navrhni zmenu arrival_time aj departure_time o +1 min. Sprav propose + validate a počkaj na potvrdenie.`
 2. `Pošlem teraz potvrdenie. Následne aplikuj patch.`
 3. `/confirm <patch_hash>`
 4. `Po aplikácii vypíš, koľko riadkov bolo zmenených.`

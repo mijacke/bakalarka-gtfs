@@ -21,10 +21,25 @@
   - „Bez slov: pravdepodobne, naznačuje, môže znamenať, pokiaľ na to nie je dôkaz v dátach.“
 - Re-test experimentu `exp_02` na rovnakých promptoch.
 
-## Po (vyplní sa po re-teste)
+## Implementované zmeny
+- Upravené systémové inštrukcie agenta v:
+  - `/Users/mariolassu/code/skola/bakalarka-gtfs/agent_gtfs/agent/systemove_instrukcie.py`
+- Pridané pravidlá:
+  - read-only úlohy = iba `gtfs_query`,
+  - pri analytike oddeľovať „Fakt z dát“ a „Interpretácia/Odhad“,
+  - zákaz kauzálnych tvrdení bez dôkazu,
+  - explicitné uvedenie limitácií (napr. prázdne `route_long_name`).
+- Služba `gtfs-api` bola po zmene rebuildnutá a reštartovaná.
+
+## Po (výsledok re-testu)
 - Výsledok po fix-e:
+  - Agent vrátil faktickú časť korektne a uviedol limitáciu `route_long_name = NULL`.
+  - Interpretácie označil explicitne ako `odhad`.
+  - Read-only režim bol dodržaný.
 - Zlepšenie oproti "Pred":
+  - Zmizli neoznačené domnienky; odhady sú teraz transparentne označené.
 - Zostávajúce chyby:
+  - V odhadoch sa stále objavujú kauzálne hypotézy (už však označené ako odhad).
 
 ## Krátka pripomienka pre ďalšie testy
 - Vždy odlišuj: `Fakt z dát` vs `Interpretácia`.
