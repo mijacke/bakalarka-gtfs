@@ -10,7 +10,7 @@ Najťažšia
 Otestovať celý pipeline na realistickom scenári od analýzy po export.
 
 ## Prompt(y) — posielaj po jednom v poradí
-1. `Komunikuj po slovensky a používaj slovenskú diakritiku. Navrhni zmenu pre vybranú linku: posuň arrival_time aj departure_time o +7 min v intervale 08:00-16:00. Najprv vypíš rozsah zásahu (koľko riadkov), potom urob propose + validate.`
+1. `Navrhni zmenu pre vybranú linku: posuň arrival_time aj departure_time o +7 min v intervale 08:00-16:00. Najprv vypíš rozsah zásahu (koľko riadkov), potom urob propose + validate.`
 2. `Vráť patch_hash a čakaj na potvrdenie.`
 3. `/confirm <patch_hash>`
 4. `Po aplikácii exportuj feed do .work/exports/exp_10_final.zip a potvrď cestu k súboru.`

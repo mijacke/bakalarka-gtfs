@@ -10,7 +10,7 @@ Vyššia
 Otestovať robustnosť modelu na nepresné zadanie a kvalitu doplňujúcich otázok.
 
 ## Prompt(y) — posielaj po jednom v poradí
-1. `Komunikuj po slovensky a používaj slovenskú diakritiku. Posuň ranné spoje o 5 minút.`
+1. `Posuň ranné spoje o 5 minút.`
 2. `Spresnenie: iba pracovné dni, čas 06:00-09:00, iba linka 1.`
 3. `Teraz urob propose + validate, bez apply.`
 
