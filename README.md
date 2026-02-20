@@ -55,6 +55,14 @@ Runtime je nastavene primarne na Docker Desktop (bez lokalneho CLI workflow).
 - Endpointy bez platneho kluca vracaju `401` a payload:
   - `{"error":{"message":"Invalid API key.",...}}`
 
+## Bezpecne potvrdenie apply kroku
+
+- `gtfs_apply_patch` je server-side chraneny:
+  - vyzaduje workflow `gtfs_propose_patch -> gtfs_validate_patch -> explicitny user confirm`
+  - explicitne potvrdenie musi byt v tvare: `/confirm <patch_hash>`
+- Podpis potvrdenia sa overuje cez shared secret:
+  - `.env`: `GTFS_CONFIRMATION_SECRET`
+
 ## Overenie autorizacie (realny test)
 
 - Testovane 19.02.2026 proti `http://127.0.0.1:8000/v1/models`:
