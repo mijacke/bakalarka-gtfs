@@ -83,13 +83,14 @@ def _cleanup_patch_states() -> None:
         _PATCH_STATES.pop(key, None)
 
 
-def _mark_proposed(patch_hash: str) -> None:
+def _mark_proposed(patch_hash: str, patch: dict) -> None:
     now = time.time()
     _PATCH_STATES[patch_hash] = {
         "created_at": now,
         "proposed_at": now,
         "validated_at": None,
         "validated_ok": False,
+        "patch": patch,
     }
 
 
@@ -135,6 +136,28 @@ def _validate_confirmation(
     return True, ""
 
 
+def _extract_confirmed_hash(
+    confirmation_message: str,
+    confirmation_signature: str,
+) -> tuple[str | None, str]:
+    """Overi podpis a format potvrdenia, vrati potvrdeny patch_hash."""
+    msg = (confirmation_message or "").strip()
+    sig = (confirmation_signature or "").strip()
+
+    if not msg or not sig:
+        return None, "Chyba explicitne potvrdenie. Pouzi '/confirm <patch_hash>'."
+
+    expected_sig = _sign_confirmation_message(msg)
+    if not hmac.compare_digest(expected_sig, sig):
+        return None, "Neplatny podpis potvrdenia pouzivatela."
+
+    match = CONFIRM_PATTERN.match(msg)
+    if not match:
+        return None, "Neplatny format potvrdenia. Pouzi '/confirm <patch_hash>'."
+
+    return match.group(1).lower(), ""
+
+
 # ---------------------------------------------------------------------------
 # Tool 1: gtfs_load
 # ---------------------------------------------------------------------------
@@ -170,7 +193,7 @@ def gtfs_load(feed_path: str, force: bool = False) -> str:
 def gtfs_query(sql: str) -> str:
     """
     Vykona read-only SQL SELECT dotaz nad GTFS databazou.
-    Maximalne 100 riadkov.
+    Ak dotaz nema LIMIT, pouzije sa predvoleny limit 500 riadkov.
 
     Args:
         sql: SQL SELECT dotaz
@@ -227,7 +250,7 @@ def gtfs_propose_patch(patch_json: str) -> str:
         patch = parse_patch(patch_json)
         summary = build_diff_summary(patch)
         patch_hash = _patch_hash(patch)
-        _mark_proposed(patch_hash)
+        _mark_proposed(patch_hash, patch)
         summary["patch_hash"] = patch_hash
         summary["confirm_command"] = f"/confirm {patch_hash}"
         return _json_response(summary)
@@ -298,10 +321,14 @@ def gtfs_apply_patch(
     """
     try:
         _cleanup_patch_states()
-        patch = parse_patch(patch_json)
-        patch_hash = _patch_hash(patch)
+        confirmed_hash, detail = _extract_confirmed_hash(
+            confirmation_message=confirmation_message,
+            confirmation_signature=confirmation_signature,
+        )
+        if not confirmed_hash:
+            return _error_response("Missing or invalid confirmation", detail)
 
-        state = _PATCH_STATES.get(patch_hash)
+        state = _PATCH_STATES.get(confirmed_hash)
         if state is None or not state.get("proposed_at"):
             return _error_response(
                 "Workflow violation",
@@ -319,16 +346,36 @@ def gtfs_apply_patch(
             )
 
         confirmation_ok, detail = _validate_confirmation(
-            patch_hash,
+            confirmed_hash,
             confirmation_message,
             confirmation_signature,
         )
         if not confirmation_ok:
             return _error_response("Missing or invalid confirmation", detail)
 
-        result = apply_patch(patch)
-        _PATCH_STATES.pop(patch_hash, None)
-        result["patch_hash"] = patch_hash
+        # Pouzi presne patch ulozeny pri propose kroku, aby apply nepadol
+        # na rozdieloch v patch_json serializacii medzi volaniami.
+        state_patch = state.get("patch")
+        if not isinstance(state_patch, dict):
+            return _error_response(
+                "Workflow violation",
+                "Chyba interny stav patchu. Navrhni patch znova cez gtfs_propose_patch.",
+            )
+
+        parsed_apply_hash = None
+        try:
+            parsed_apply_patch = parse_patch(patch_json)
+            parsed_apply_hash = _patch_hash(parsed_apply_patch)
+        except Exception:
+            # apply prebehne podla potvrdeneho hashu a ulozeneho patchu z propose
+            pass
+        if parsed_apply_hash and parsed_apply_hash != confirmed_hash:
+            state["apply_patch_mismatch"] = True
+            state["apply_patch_mismatch_hash"] = parsed_apply_hash
+
+        result = apply_patch(state_patch)
+        _PATCH_STATES.pop(confirmed_hash, None)
+        result["patch_hash"] = confirmed_hash
         return _json_response(result)
     except Exception as e:
         return _error_response(str(e), traceback.format_exc())

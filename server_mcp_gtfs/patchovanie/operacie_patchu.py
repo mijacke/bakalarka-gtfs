@@ -59,9 +59,44 @@ def _validate_operation(op: dict, idx: int) -> None:
         raise ValueError(f"{prefix}: 'insert' vyzaduje 'rows'.")
 
     if "filter" in op:
-        f = op["filter"]
-        if f.get("operator") and f["operator"] not in VALID_OPERATORS:
-            raise ValueError(f"{prefix}: neplatny operator '{f['operator']}'.")
+        _validate_filter_spec(op["filter"], prefix)
+
+
+def _validate_filter_spec(flt: dict | list, prefix: str) -> None:
+    """Validuje filter (simple alebo zlozeny cez and/or)."""
+    if isinstance(flt, list):
+        if not flt:
+            raise ValueError(f"{prefix}: filter zoznam nesmie byt prazdny.")
+        for child in flt:
+            _validate_filter_spec(child, prefix)
+        return
+
+    if not isinstance(flt, dict):
+        raise ValueError(f"{prefix}: filter musi byt objekt alebo zoznam objektov.")
+
+    has_and = "and" in flt
+    has_or = "or" in flt
+    if has_and and has_or:
+        raise ValueError(f"{prefix}: filter nemoze mat sucasne 'and' aj 'or'.")
+
+    if has_and or has_or:
+        logic_key = "and" if has_and else "or"
+        children = flt.get(logic_key)
+        if not isinstance(children, list) or not children:
+            raise ValueError(f"{prefix}: '{logic_key}' musi byt neprazdny zoznam.")
+        for child in children:
+            _validate_filter_spec(child, prefix)
+        return
+
+    missing = [key for key in ("column", "operator", "value") if key not in flt]
+    if missing:
+        raise ValueError(f"{prefix}: filter chyba kluce {missing}.")
+
+    operator = str(flt["operator"]).upper()
+    if operator not in VALID_OPERATORS:
+        raise ValueError(f"{prefix}: neplatny operator '{flt['operator']}'.")
+    if operator == "IN" and not isinstance(flt["value"], list):
+        raise ValueError(f"{prefix}: operator IN vyzaduje zoznam hodnot.")
 
 
 # ---------------------------------------------------------------------------
@@ -69,10 +104,46 @@ def _validate_operation(op: dict, idx: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _filter_to_where(flt: dict) -> tuple[str, list]:
-    """Konvertuje filter dict na SQL WHERE klauzulu + parametre."""
+def _filter_to_where(flt: dict | list) -> tuple[str, list]:
+    """Konvertuje filter na SQL WHERE klauzulu + parametre."""
+    if isinstance(flt, list):
+        parts = []
+        params: list[Any] = []
+        for child in flt:
+            child_where, child_params = _filter_to_where(child)
+            parts.append(f"({child_where})")
+            params.extend(child_params)
+        return " AND ".join(parts), params
+
+    if not isinstance(flt, dict):
+        raise ValueError("Filter musi byt objekt alebo zoznam objektov.")
+
+    if "and" in flt:
+        children = flt["and"]
+        if not isinstance(children, list) or not children:
+            raise ValueError("Filter 'and' musi byt neprazdny zoznam.")
+        parts = []
+        params: list[Any] = []
+        for child in children:
+            child_where, child_params = _filter_to_where(child)
+            parts.append(f"({child_where})")
+            params.extend(child_params)
+        return " AND ".join(parts), params
+
+    if "or" in flt:
+        children = flt["or"]
+        if not isinstance(children, list) or not children:
+            raise ValueError("Filter 'or' musi byt neprazdny zoznam.")
+        parts = []
+        params: list[Any] = []
+        for child in children:
+            child_where, child_params = _filter_to_where(child)
+            parts.append(f"({child_where})")
+            params.extend(child_params)
+        return " OR ".join(parts), params
+
     col = flt["column"]
-    operator = flt["operator"]
+    operator = str(flt["operator"]).upper()
     value = flt["value"]
 
     if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", col):
@@ -81,10 +152,12 @@ def _filter_to_where(flt: dict) -> tuple[str, list]:
     if operator == "IN":
         if not isinstance(value, list):
             raise ValueError("Operator IN vyzaduje zoznam hodnot.")
+        if not value:
+            return "1 = 0", []
         placeholders = ", ".join(["?"] * len(value))
         return f"{col} IN ({placeholders})", value
-    else:
-        return f"{col} {operator} ?", [value]
+
+    return f"{col} {operator} ?", [value]
 
 
 # ---------------------------------------------------------------------------

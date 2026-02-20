@@ -4,7 +4,7 @@ databaza.py — SQLite databaza pre GTFS data (singleton — jedna current.db).
 Funkcie:
   - ensure_loaded(feed_path)     — nacita GTFS ak DB este neexistuje
   - get_current_db()             — cesta k aktivnej .db
-  - run_query(sql)               — read-only SELECT, max 100 riadkov
+  - run_query(sql)               — read-only SELECT, default limit 500 riadkov
   - export_to_gtfs(output_path)  — dump do CSV -> ZIP
   - reset_db()                   — vymaze DB (pre novy chat / fresh import)
 """
@@ -280,10 +280,10 @@ def _check_db() -> None:
 _FORBIDDEN_KEYWORDS = {"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "ATTACH", "DETACH"}
 
 
-def run_query(sql: str, limit: int = 100) -> list[dict]:
+def run_query(sql: str, limit: int = 500) -> list[dict]:
     """
     Vykona read-only SELECT dotaz nad aktualnou DB.
-    Max `limit` riadkov.
+    Ak dotaz nema LIMIT, doplni sa predvoleny `limit`.
     """
     _check_db()
 
