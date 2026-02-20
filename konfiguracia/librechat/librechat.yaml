@@ -10,8 +10,22 @@ endpoints:
       baseURL: "http://gtfs-api:8000/v1"
       models:
         default: ["gtfs-agent"]
-        fetch: true
-      titleConvo: true
+        fetch: false
+      titleConvo: false
       titleModel: "gtfs-agent"
       summarize: false
+      streamRate: 1
+      headers:
+        x-gtfs-trace-source: "librechat"
+        x-librechat-user-id: "{{LIBRECHAT_USER_ID}}"
+        x-librechat-conversation-id: "{{LIBRECHAT_BODY_CONVERSATIONID}}"
+        x-librechat-parent-message-id: "{{LIBRECHAT_BODY_PARENTMESSAGEID}}"
+        x-librechat-message-id: "{{LIBRECHAT_BODY_MESSAGEID}}"
+      dropParams:
+        - "user"
+        - "stop"
+        - "frequency_penalty"
+        - "presence_penalty"
+        - "logprobs"
+        - "top_logprobs"
       modelDisplayLabel: "GTFS Agent"

@@ -71,6 +71,25 @@ Runtime je nastavene primarne na Docker Desktop (bez lokalneho CLI workflow).
 - Zapnutie/vypnutie:
   - `.env`: `GTFS_SHOW_TIMING_FOOTER=true|false`
 
+## Trace a rychlost (LibreChat + GTFS API)
+
+- `konfiguracia/librechat/librechat.yaml` je nastavene na rychlejsi UX:
+  - `titleConvo: false` (bez extra volania na generovanie nazvu konverzacie)
+  - `streamRate: 1` (minimalny stream delay v LibreChat)
+  - `models.fetch: false` (bez dodatocneho fetch modelov pre custom endpoint)
+  - `dropParams` (odstranene nepouzite OpenAI polia v requeste)
+- LibreChat posiela trace hlavičky do GTFS API:
+  - `x-librechat-user-id`
+  - `x-librechat-conversation-id`
+  - `x-librechat-parent-message-id`
+  - `x-librechat-message-id`
+- GTFS API vracia technicke trace/timing hlavičky:
+  - `x-gtfs-trace-id`
+  - `x-gtfs-thinking-ms`
+  - `x-gtfs-total-ms` (pri non-stream odpovedi)
+- Server trace logy:
+  - `.env`: `GTFS_ENABLE_TRACE_LOGS=true|false`
+
 ## Overenie autorizacie (realny test)
 
 - Testovane 19.02.2026 proti `http://127.0.0.1:8000/v1/models`:
