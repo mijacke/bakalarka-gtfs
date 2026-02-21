@@ -25,13 +25,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WORK_DIR = PROJECT_ROOT / ".work" / "datasets"
 DB_PATH = WORK_DIR / "current.db"
 
-# Mapovanie GTFS .txt -> SQLite tabulka (len 5 tabuliek pre MVP)
+# Mapovanie GTFS .txt -> SQLite tabulka
 GTFS_TABLES: dict[str, str] = {
     "stops.txt": "stops",
     "routes.txt": "routes",
     "calendar.txt": "calendar",
     "trips.txt": "trips",
     "stop_times.txt": "stop_times",
+    "shapes.txt": "shapes",
 }
 
 
@@ -82,7 +83,8 @@ CREATE TABLE IF NOT EXISTS trips (
     route_id      TEXT NOT NULL REFERENCES routes(route_id),
     service_id    TEXT NOT NULL REFERENCES calendar(service_id),
     trip_headsign TEXT,
-    direction_id  INTEGER
+    direction_id  INTEGER,
+    shape_id      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS stop_times (
@@ -92,6 +94,25 @@ CREATE TABLE IF NOT EXISTS stop_times (
     stop_id        TEXT    NOT NULL REFERENCES stops(stop_id),
     stop_sequence  INTEGER NOT NULL,
     PRIMARY KEY (trip_id, stop_sequence)
+);
+
+CREATE TABLE IF NOT EXISTS shapes (
+    shape_id       TEXT NOT NULL,
+    shape_pt_lat   REAL NOT NULL,
+    shape_pt_lon   REAL NOT NULL,
+    shape_pt_sequence INTEGER NOT NULL,
+    shape_dist_traveled REAL,
+    PRIMARY KEY (shape_id, shape_pt_sequence)
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_name TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    record_id TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    old_data JSON,
+    new_data JSON
 );
 """
 
@@ -103,14 +124,68 @@ _TABLE_COLUMNS: dict[str, list[str]] = {
         "service_id", "monday", "tuesday", "wednesday", "thursday",
         "friday", "saturday", "sunday", "start_date", "end_date",
     ],
-    "trips": ["trip_id", "route_id", "service_id", "trip_headsign", "direction_id"],
+    "trips": ["trip_id", "route_id", "service_id", "trip_headsign", "direction_id", "shape_id"],
     "stop_times": ["trip_id", "arrival_time", "departure_time", "stop_id", "stop_sequence"],
+    "shapes": ["shape_id", "shape_pt_lat", "shape_pt_lon", "shape_pt_sequence", "shape_dist_traveled"],
 }
 
 
+def _create_audit_triggers(conn: sqlite3.Connection) -> None:
+    """Dynamicky vytvori audit triggery pre vsetky tabulky."""
+    for table, cols in _TABLE_COLUMNS.items():
+        # Urcenie identifikatora pre zaznam (PK)
+        if table == "stop_times":
+            record_id_expr = "NEW.trip_id || '-' || NEW.stop_sequence"
+            old_record_id_expr = "OLD.trip_id || '-' || OLD.stop_sequence"
+        elif table == "shapes":
+            record_id_expr = "NEW.shape_id || '-' || NEW.shape_pt_sequence"
+            old_record_id_expr = "OLD.shape_id || '-' || OLD.shape_pt_sequence"
+        else:
+            pk_col = cols[0] # V našom prípade je vždy prvý stĺpec primárny kľúč (stop_id, route_id, service_id, trip_id)
+            record_id_expr = f"NEW.{pk_col}"
+            old_record_id_expr = f"OLD.{pk_col}"
+
+        # JSON object expression pre old_data a new_data
+        new_json_args = ", ".join(f"'{c}', NEW.{c}" for c in cols)
+        old_json_args = ", ".join(f"'{c}', OLD.{c}" for c in cols)
+        
+        new_json_expr = f"json_object({new_json_args})" if new_json_args else "NULL"
+        old_json_expr = f"json_object({old_json_args})" if old_json_args else "NULL"
+
+        triggers = [
+            f"""
+            CREATE TRIGGER IF NOT EXISTS audit_{table}_insert
+            AFTER INSERT ON {table}
+            BEGIN
+                INSERT INTO audit_log (table_name, operation, record_id, old_data, new_data)
+                VALUES ('{table}', 'INSERT', {record_id_expr}, NULL, {new_json_expr});
+            END;
+            """,
+            f"""
+            CREATE TRIGGER IF NOT EXISTS audit_{table}_update
+            AFTER UPDATE ON {table}
+            BEGIN
+                INSERT INTO audit_log (table_name, operation, record_id, old_data, new_data)
+                VALUES ('{table}', 'UPDATE', {record_id_expr}, {old_json_expr}, {new_json_expr});
+            END;
+            """,
+            f"""
+            CREATE TRIGGER IF NOT EXISTS audit_{table}_delete
+            AFTER DELETE ON {table}
+            BEGIN
+                INSERT INTO audit_log (table_name, operation, record_id, old_data, new_data)
+                VALUES ('{table}', 'DELETE', {old_record_id_expr}, {old_json_expr}, NULL);
+            END;
+            """
+        ]
+        for t_sql in triggers:
+            conn.executescript(t_sql)
+
+
 def create_schema(conn: sqlite3.Connection) -> None:
-    """Vytvori 5 GTFS tabuliek (idempotentne)."""
+    """Vytvori 5 GTFS tabuliek, audit tabulku a vsetky triggery (idempotentne)."""
     conn.executescript(_SCHEMA_SQL)
+    _create_audit_triggers(conn)
 
 
 # ---------------------------------------------------------------------------

@@ -42,3 +42,11 @@ ENABLE_TRACE_LOGS = os.getenv("GTFS_ENABLE_TRACE_LOGS", "true").strip().lower() 
     "yes",
     "on",
 }
+
+# Zobrazit trace header (priebeh agenta) nad odpovedou
+SHOW_TRACE_HEADER = os.getenv("GTFS_SHOW_TRACE_HEADER", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}

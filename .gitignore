@@ -73,5 +73,7 @@ Thumbs.db
 
 # --- Project Specific ---
 .work/
+.uv-cache/
+.pycache/
 # Ak "data" obsahuje len lokalne stiahnute data, ktore nemaju byt v repe:
 # data/

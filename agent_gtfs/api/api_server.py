@@ -26,14 +26,17 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from agents.exceptions import MaxTurnsExceeded
 
-from ..agent.agent_s_mcp import GTFSAgent, AgentProfiling
+from ..agent.agent_s_mcp import GTFSAgent, AgentProfiling, AgentTrace
+from ..agent.cenotvorba import vypocitaj_cenu
 from ..konfiguracia.nastavenia import (
     API_PORT,
     API_KEY,
     CONFIRMATION_SECRET,
     ENABLE_TRACE_LOGS,
     SHOW_TIMING_FOOTER,
+    SHOW_TRACE_HEADER,
     AGENT_MAX_TURNS,
+    AGENT_MODEL,
 )
 
 # ---------------------------------------------------------------------------
@@ -43,7 +46,7 @@ from ..konfiguracia.nastavenia import (
 app = FastAPI(
     title="GTFS Agent API",
     description="OpenAI-kompatibilný endpoint pre GTFS agenta",
-    version="0.2.0",
+    version="0.3.0",
 )
 logger = logging.getLogger(__name__)
 AGENT = GTFSAgent(max_turns=AGENT_MAX_TURNS)
@@ -131,18 +134,34 @@ def _sign_confirmation_message(message: str) -> str:
     ).hexdigest()
 
 
-def _format_timing_footer(profiling: AgentProfiling) -> str:
+def _format_timing_footer(profiling: AgentProfiling, prompt_tokens: int, completion_tokens: int) -> str:
     """
     Format casov pre nenapadny footer pod odpovedou.
     Zobrazuje sa pod ciarou, aby co najmenej rusil chat.
     """
+    total_tokens = prompt_tokens + completion_tokens
+    estimated_price = vypocitaj_cenu(AGENT_MODEL, prompt_tokens, completion_tokens)
+    
     return (
         "\n\n---\n"
         f"_celkový čas rozmýšľania: {profiling.thinking_seconds:.2f} s_\n"
         f"_profiling: model {profiling.model_seconds:.2f} s | "
         f"db/mcp {profiling.db_mcp_seconds:.2f} s | "
-        f"python {profiling.python_overhead_seconds:.2f} s_"
+        f"python {profiling.python_overhead_seconds:.2f} s_\n"
+        f"_tokeny: {prompt_tokens} prompt / {completion_tokens} completion ({total_tokens} total) | "
+        f"odhadovaná cena: **${estimated_price:.4f}**_"
     )
+
+
+def _format_trace_header(trace: AgentTrace) -> str:
+    """
+    Format trace ako markdown header blok nad odpovedou.
+    Profesionalny styl — zobrazuje kompletny priebeh agenta.
+    """
+    md = trace.to_markdown()
+    if not md:
+        return ""
+    return md + "\n---\n\n"
 
 
 def _extract_trace_id(request: Request, fallback: str) -> str:
@@ -221,7 +240,12 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
     if not _is_authorized(request):
         return _unauthorized_response()
 
-    # Odfiltruj system spravy — agent ma vlastne instrukcie v systemove_instrukcie.py
+    # Extrahuj system spravy od klienta (LibreChat sem vklada instrukcie pre Artifacts)
+    extra_instructions = "\n\n".join(
+        m.content.strip() for m in chat_request.messages if m.role == "system" and m.content
+    )
+
+    # Odfiltruj system spravy — agent ma vlastne instrukcie v systemove_instrukcie.py plus tie co sme prave extrahovali
     spravy = [
         {"role": m.role, "content": m.content or ""}
         for m in chat_request.messages
@@ -243,6 +267,7 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
         llm_calls=0,
         tool_calls=0,
     )
+    agent_trace = AgentTrace()
 
     _trace_log(
         "GTFS chat start trace_id=%s stream=%s model=%s messages=%d",
@@ -259,10 +284,12 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
             # nevracal k navrhovaniu noveho patchu.
             spravy = [{"role": "user", "content": last_user_message}]
         confirmation_signature = _sign_confirmation_message(last_user_message)
-        odpoved, profiling = await AGENT.run_with_profiling(
-            spravy,
+        odpoved, profiling, agent_trace = await AGENT.run_with_profiling(
+            vstup=spravy,
+            extra_instructions=extra_instructions,
             confirmation_message=last_user_message,
             confirmation_signature=confirmation_signature,
+            collect_trace=SHOW_TRACE_HEADER,
         )
     except MaxTurnsExceeded:
         thinking_seconds = time.perf_counter() - thinking_started_at
@@ -293,7 +320,7 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
         error_id = uuid.uuid4().hex[:10]
         logger.exception("GTFS agent failed (error_id=%s)", error_id)
         odpoved = (
-            "❌ Interna chyba agenta.\n"
+            "Interna chyba agenta.\n"
             f"ID chyby: {error_id}\n"
             "Skus poziadavku zopakovat."
         )
@@ -314,6 +341,7 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
                 created=created,
                 profiling=profiling,
                 trace_id=trace_id,
+                agent_trace=agent_trace,
             ),
             media_type="text/event-stream",
             headers=_build_response_headers(
@@ -322,8 +350,20 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
             ),
         )
 
+    # Non-streaming: zostav finalnu odpoved
+    final_content = ""
+
+    if SHOW_TRACE_HEADER:
+        final_content += _format_trace_header(agent_trace)
+
+    final_content += odpoved
+
     if SHOW_TIMING_FOOTER:
-        odpoved = odpoved + _format_timing_footer(profiling=profiling)
+        final_content += _format_timing_footer(
+            profiling=profiling,
+            prompt_tokens=profiling.prompt_tokens,
+            completion_tokens=profiling.completion_tokens,
+        )
 
     _trace_log(
         "GTFS chat done trace_id=%s thinking_ms=%d model_ms=%d db_mcp_ms=%d python_ms=%d stream=%s",
@@ -343,14 +383,14 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": odpoved},
+                "message": {"role": "assistant", "content": final_content},
                 "finish_reason": "stop",
             }
         ],
         "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
+            "prompt_tokens": profiling.prompt_tokens,
+            "completion_tokens": profiling.completion_tokens,
+            "total_tokens": profiling.total_tokens,
         },
         "gtfs_timing": {
             "total_thinking_seconds": round(profiling.thinking_seconds, 3),
@@ -376,42 +416,45 @@ async def _stream_odpoved(
     created: int,
     profiling: AgentProfiling,
     trace_id: str,
+    agent_trace: AgentTrace | None = None,
 ):
     """Streamuje odpoveď po slovách v OpenAI chunk formáte."""
+
+    def _make_chunk(content: str, finish_reason=None):
+        return {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": "gtfs-agent",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": content} if content else {},
+                    "finish_reason": finish_reason,
+                }
+            ],
+        }
+
+    # -- Trace header (ak je zapnuty) --
+    if SHOW_TRACE_HEADER and agent_trace:
+        trace_header = _format_trace_header(agent_trace)
+        if trace_header:
+            yield f"data: {json.dumps(_make_chunk(trace_header))}\n\n"
+
+    # -- Hlavna odpoved --
     slova = text.split(" ")
     for i, slovo in enumerate(slova):
         obsah = slovo if i == 0 else " " + slovo
-        chunk = {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": "gtfs-agent",
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"content": obsah},
-                    "finish_reason": None,
-                }
-            ],
-        }
-        yield f"data: {json.dumps(chunk)}\n\n"
+        yield f"data: {json.dumps(_make_chunk(obsah))}\n\n"
 
+    # -- Timing footer (ak je zapnuty) --
     if SHOW_TIMING_FOOTER:
-        footer_text = _format_timing_footer(profiling=profiling)
-        footer_chunk = {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": "gtfs-agent",
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"content": footer_text},
-                    "finish_reason": None,
-                }
-            ],
-        }
-        yield f"data: {json.dumps(footer_chunk)}\n\n"
+        footer_text = _format_timing_footer(
+            profiling=profiling,
+            prompt_tokens=profiling.prompt_tokens,
+            completion_tokens=profiling.completion_tokens,
+        )
+        yield f"data: {json.dumps(_make_chunk(footer_text))}\n\n"
 
     _trace_log(
         "GTFS chat stream_done trace_id=%s thinking_ms=%d model_ms=%d db_mcp_ms=%d python_ms=%d",
@@ -423,20 +466,7 @@ async def _stream_odpoved(
     )
 
     # Finálny chunk
-    final = {
-        "id": completion_id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": "gtfs-agent",
-        "choices": [
-            {
-                "index": 0,
-                "delta": {},
-                "finish_reason": "stop",
-            }
-        ],
-    }
-    yield f"data: {json.dumps(final)}\n\n"
+    yield f"data: {json.dumps(_make_chunk('', finish_reason='stop'))}\n\n"
     yield "data: [DONE]\n\n"
 
 
@@ -459,10 +489,11 @@ def main():
     """Spustí API server."""
     import uvicorn
 
-    print(f"🚀 GTFS Agent API server")
+    print(f"GTFS Agent API server")
     print(f"   Endpoint: http://localhost:{API_PORT}/v1/chat/completions")
     print(f"   Modely:   http://localhost:{API_PORT}/v1/models")
     print(f"   Health:   http://localhost:{API_PORT}/health")
+    print(f"   Trace header: {'ON' if SHOW_TRACE_HEADER else 'OFF'}")
     print()
     uvicorn.run(app, host="0.0.0.0", port=API_PORT)
 

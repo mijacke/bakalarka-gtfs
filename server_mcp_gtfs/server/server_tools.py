@@ -36,6 +36,7 @@ from server_mcp_gtfs.patchovanie.operacie_patchu import (
     apply_patch,
 )
 from server_mcp_gtfs.patchovanie.validacia import validate_patch
+from server_mcp_gtfs.vizualizacia.map_template import get_map_html
 
 # ---------------------------------------------------------------------------
 # Server
@@ -401,6 +402,278 @@ def gtfs_export(output_path: str) -> str:
     try:
         path = export_to_gtfs(output_path)
         return _json_response({"exported": True, "path": path})
+    except Exception as e:
+        return _error_response(str(e), traceback.format_exc())
+
+
+# ---------------------------------------------------------------------------
+# Tool 7: gtfs_get_history
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def gtfs_get_history(limit: int = 50) -> str:
+    """
+    Ziska historiu zmien (audit log) vykonanych nad GTFS databazou.
+    
+    Args:
+        limit: Maximalny pocet predchadzajucich zaznamov na zobrazenie (predvolene 50).
+        
+    Returns:
+        JSON pole zaznamov zoradenych od najnovsich.
+    """
+    try:
+        sql = f"SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT {limit}"
+        rows = run_query(sql)
+        return _json_response({"history": rows, "count": len(rows)})
+    except Exception as e:
+        return _error_response(str(e), traceback.format_exc())
+
+
+# ---------------------------------------------------------------------------
+# Tool 8: gtfs_show_map
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def gtfs_show_map(
+    route_id: str = None,
+    trip_id: str = None,
+    from_stop_id: str = None,
+    to_stop_id: str = None,
+    show_all_stops: bool = False,
+) -> str:
+    """
+    Vygeneruje interaktívny HTML widget (Artifact) s mapou — buď zobrazí trasu/spoj, alebo všetky zastávky.
+
+    Režimy použitia:
+    A) show_all_stops=True: Zobrazí všetky zastávky v databáze na mape (ignoruje route_id/trip_id).
+    B) trip_id: Zobrazí konkrétny trip a jeho zastávky.
+    C) route_id: Zobrazí cestu s najvyšším počtom zastávok pre danú linku.
+    D) route_id + from_stop_id + to_stop_id: Nájde trip na tejto linke, 
+       ktorý obsahuje obe zastávky v správnom poradí, a zobrazí len úsek medzi nimi.
+
+    Args:
+        route_id: ID linky (trasy).
+        trip_id: Konkrétne ID trip-u.
+        from_stop_id: ID počiatočnej zastávky (odkiaľ ide spoj). Použite spolu s route_id a to_stop_id.
+        to_stop_id: ID cieľovej zastávky (kam ide spoj). Použite spolu s route_id a from_stop_id.
+        show_all_stops: Ak True, zobrazí všetky zastávky v databáze na mape.
+
+    Returns:
+        LibreChat Artifact s interaktívnou mapou.
+    """
+    try:
+        route_meta = {}
+
+        # ===== REŽIM A: Všetky zastávky =====
+        if show_all_stops:
+            stops_sql = """
+                SELECT
+                    ROUND(AVG(stop_lat), 4) as lat,
+                    ROUND(AVG(stop_lon), 4) as lon,
+                    stop_name as name
+                FROM stops
+                GROUP BY stop_name
+            """
+            stops = run_query(stops_sql)
+            if not stops:
+                return _error_response("Prázdna databáza", "V databáze nie sú žiadne zastávky.")
+
+            # Kompaktný formát: [[lat,lon,name], ...] — menšie než pole objektov
+            import json
+            compact = json.dumps(
+                [[s["lat"], s["lon"], s["name"]] for s in stops],
+                ensure_ascii=False,
+            )
+            # Minimálny HTML aby neprekročil limity LLM výstupu
+            html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>*{{margin:0;padding:0}}body{{font-family:sans-serif}}
+#h{{background:#1e293b;color:#fff;padding:8px 14px;font-size:14px;font-weight:600}}
+#m{{height:560px;width:100%}}</style></head>
+<body><div id="h">📍 Všetky zastávky ({len(stops)})</div><div id="m"></div>
+<script>
+var d={compact};
+var m=L.map('m');
+L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19}}).addTo(m);
+var b=[];
+for(var i=0;i<d.length;i++){{
+var s=d[i];b.push([s[0],s[1]]);
+L.circleMarker([s[0],s[1]],{{radius:4,fillColor:'#F56200',color:'#fff',weight:1,fillOpacity:0.85}}).bindPopup('<b>'+s[2]+'</b>').addTo(m);
+}}
+m.fitBounds(b,{{padding:[30,30]}});
+</script></body></html>"""
+
+            return (
+                ':::artifact{identifier="gtfs-map-all" type="text/html" title="Všetky zastávky"}\n'
+                f"```html\n{html}\n```\n"
+                ":::"
+            )
+
+        if not trip_id and not route_id:
+            return _error_response("Chyba parametrov", "Zadaj buď trip_id, route_id, alebo show_all_stops=True.")
+
+        # ===== Získat route_meta ak máme route_id =====
+        if route_id:
+            meta_sql = f"SELECT route_short_name, route_long_name, route_color FROM routes WHERE route_id = '{route_id}' LIMIT 1"
+            meta_res = run_query(meta_sql)
+            if meta_res:
+                r = meta_res[0]
+                route_meta = {
+                    "route_short_name": r.get("route_short_name", ""),
+                    "route_long_name": r.get("route_long_name", ""),
+                    "route_color": r.get("route_color", "F56200"),
+                }
+
+        # ===== REŽIM D: Smerový výber (from → to) — celý trip s highlighted úsekom =====
+        if not trip_id and route_id and from_stop_id and to_stop_id:
+            direction_sql = f"""
+                SELECT
+                    st_from.trip_id,
+                    st_from.stop_sequence AS seq_from,
+                    st_to.stop_sequence AS seq_to
+                FROM stop_times st_from
+                JOIN stop_times st_to ON st_from.trip_id = st_to.trip_id
+                JOIN trips t ON t.trip_id = st_from.trip_id
+                WHERE t.route_id = '{route_id}'
+                  AND st_from.stop_id = '{from_stop_id}'
+                  AND st_to.stop_id = '{to_stop_id}'
+                  AND st_from.stop_sequence < st_to.stop_sequence
+                LIMIT 1
+            """
+            dir_res = run_query(direction_sql)
+            if dir_res:
+                trip_id = dir_res[0]["trip_id"]
+                seq_from = dir_res[0]["seq_from"]
+                seq_to = dir_res[0]["seq_to"]
+
+                # Načítaj VŠETKY zastávky celého tripu
+                all_stops_sql = f"""
+                    SELECT
+                        s.stop_lat as lat,
+                        s.stop_lon as lon,
+                        s.stop_name as name,
+                        st.arrival_time as time,
+                        st.stop_sequence as seq
+                    FROM stop_times st
+                    JOIN stops s ON st.stop_id = s.stop_id
+                    WHERE st.trip_id = '{trip_id}'
+                    ORDER BY st.stop_sequence ASC
+                """
+                stops = run_query(all_stops_sql)
+                if stops:
+                    # Nájdi 0-based indexy highlight úseku
+                    highlight_from = None
+                    highlight_to = None
+                    for i, stop in enumerate(stops):
+                        if stop["seq"] == seq_from:
+                            highlight_from = i
+                        if stop["seq"] == seq_to:
+                            highlight_to = i
+
+                    hs_sql = f"SELECT trip_headsign FROM trips WHERE trip_id = '{trip_id}' LIMIT 1"
+                    hs_res = run_query(hs_sql)
+                    route_meta["trip_headsign"] = hs_res[0]["trip_headsign"] if hs_res else ""
+
+                    from_name = stops[highlight_from]["name"] if highlight_from is not None else ""
+                    to_name = stops[highlight_to]["name"] if highlight_to is not None else ""
+                    route_meta["title"] = f"Linka {route_meta.get('route_short_name', route_id)}: {from_name} → {to_name}"
+
+                    html = get_map_html(
+                        stops=stops,
+                        shapes=[],
+                        route_meta=route_meta,
+                        highlight_from=highlight_from,
+                        highlight_to=highlight_to,
+                    )
+                    artifact_id = f"gtfs-map-{route_id}-segment"
+                    return (
+                        f':::artifact{{identifier="{artifact_id}" type="text/html" title="{route_meta["title"]}"}}\n'
+                        f"```html\n{html}\n```\n"
+                        ":::"
+                    )
+            else:
+                return _error_response(
+                    "Nenajdený priamy spoj",
+                    f"Pre route_id={route_id} neexistuje trip kde from_stop_id={from_stop_id} je pred to_stop_id={to_stop_id}. "
+                    "Skús opačný smer alebo iný route_id.",
+                )
+
+        # ===== REŽIM B/C: Celý trip =====
+        if not trip_id:
+            trip_sql = f"""
+                SELECT t.trip_id, COUNT(st.stop_id) as stop_count
+                FROM trips t
+                JOIN stop_times st ON t.trip_id = st.trip_id
+                WHERE t.route_id = '{route_id}'
+                GROUP BY t.trip_id
+                ORDER BY stop_count DESC
+                LIMIT 1
+            """
+            res = run_query(trip_sql)
+            if not res:
+                return _error_response("Nenajdené dáta", f"Pre route_id {route_id} sa nenašiel žiadny trip.")
+            trip_id = res[0]["trip_id"]
+
+        # Shapes
+        shapes = []
+        try:
+            shape_sql = f"SELECT shape_id FROM trips WHERE trip_id = '{trip_id}'"
+            res = run_query(shape_sql)
+            shape_id = res[0]["shape_id"] if res and "shape_id" in res[0] and res[0]["shape_id"] else None
+            if shape_id:
+                coord_sql = f"SELECT shape_pt_lat as lat, shape_pt_lon as lon FROM shapes WHERE shape_id = '{shape_id}' ORDER BY shape_pt_sequence ASC"
+                shapes = run_query(coord_sql)
+        except Exception:
+            pass
+
+        # Zastávky
+        stops_sql = f"""
+            SELECT
+                s.stop_lat as lat,
+                s.stop_lon as lon,
+                s.stop_name as name,
+                st.arrival_time as time
+            FROM stop_times st
+            JOIN stops s ON st.stop_id = s.stop_id
+            WHERE st.trip_id = '{trip_id}'
+            ORDER BY st.stop_sequence ASC
+        """
+        stops = run_query(stops_sql)
+
+        if not stops:
+            return _error_response("Nenajdené zastávky", f"Pre trip_id {trip_id} sa nenašli žiadne zastávky.")
+
+        # Headsign + route_id z trips ak chýba
+        hs_sql = f"SELECT trip_headsign, route_id FROM trips WHERE trip_id = '{trip_id}' LIMIT 1"
+        hs_res = run_query(hs_sql)
+        if hs_res:
+            route_meta["trip_headsign"] = hs_res[0].get("trip_headsign", "")
+            if not route_id:
+                route_id = hs_res[0].get("route_id", "")
+        if not route_meta.get("route_short_name") and route_id:
+            meta_sql = f"SELECT route_short_name, route_long_name, route_color FROM routes WHERE route_id = '{route_id}' LIMIT 1"
+            meta_res = run_query(meta_sql)
+            if meta_res:
+                r = meta_res[0]
+                route_meta["route_short_name"] = r.get("route_short_name", "")
+                route_meta["route_long_name"] = r.get("route_long_name", "")
+                route_meta["route_color"] = r.get("route_color", "F56200")
+
+        title = f"Linka {route_meta.get('route_short_name', route_id)}: {stops[0]['name']} → {stops[-1]['name']}"
+        route_meta["title"] = title
+
+        html = get_map_html(stops=stops, shapes=shapes, route_meta=route_meta)
+        artifact_id = f"gtfs-map-{route_id or trip_id}"
+        return (
+            f':::artifact{{identifier="{artifact_id}" type="text/html" title="{title}"}}\n'
+            f"```html\n{html}\n```\n"
+            ":::"
+        )
     except Exception as e:
         return _error_response(str(e), traceback.format_exc())
 
