@@ -13,7 +13,8 @@ from __future__ import annotations
 import sqlite3
 
 from ..database import _check_db, get_current_db
-from .operations import _apply_transform, _filter_to_where
+from .sql_builder import filter_to_where
+from .transforms import apply_transform, gtfs_time_to_seconds
 
 # ---------------------------------------------------------------------------
 # FK relacie medzi GTFS tabulkami
@@ -79,7 +80,6 @@ def validate_patch(patch_json: dict) -> dict:
     try:
         for i, op in enumerate(patch_json["operations"]):
             prefix = f"Op#{i + 1} ({op['op']} {op['table']})"
-            op["table"]
             op_type = op["op"]
 
             if op_type == "insert":
@@ -145,7 +145,7 @@ def _validate_update(
     flt = op["filter"]
     set_spec = op["set"]
 
-    where, params = _filter_to_where(flt)
+    where, params = filter_to_where(flt)
     count = conn.execute(f"SELECT COUNT(*) as c FROM {table} WHERE {where}", params).fetchone()["c"]
 
     if count == 0:
@@ -184,7 +184,7 @@ def _validate_time_ordering(
     if "arrival_time" not in set_spec and "departure_time" not in set_spec:
         return
 
-    where, params = _filter_to_where(op["filter"])
+    where, params = filter_to_where(op["filter"])
     cursor = conn.execute(
         f"SELECT arrival_time, departure_time FROM stop_times WHERE {where}",
         params,
@@ -197,20 +197,20 @@ def _validate_time_ordering(
         if "arrival_time" in set_spec:
             val = set_spec["arrival_time"]
             if isinstance(val, dict) and "transform" in val:
-                arr = _apply_transform(arr, val)
+                arr = apply_transform(arr, val)
             else:
                 arr = val
 
         if "departure_time" in set_spec:
             val = set_spec["departure_time"]
             if isinstance(val, dict) and "transform" in val:
-                dep = _apply_transform(dep, val)
+                dep = apply_transform(dep, val)
             else:
                 dep = val
 
         try:
-            arr_seconds = _gtfs_time_to_seconds(str(arr)) if arr not in (None, "") else None
-            dep_seconds = _gtfs_time_to_seconds(str(dep)) if dep not in (None, "") else None
+            arr_seconds = gtfs_time_to_seconds(str(arr)) if arr not in (None, "") else None
+            dep_seconds = gtfs_time_to_seconds(str(dep)) if dep not in (None, "") else None
         except ValueError as e:
             errors.append(f"{prefix}: neplatny format casu po update: {e}")
             break
@@ -218,18 +218,6 @@ def _validate_time_ordering(
         if arr_seconds is not None and dep_seconds is not None and arr_seconds > dep_seconds:
             errors.append(f"{prefix}: po update arrival_time ({arr}) > departure_time ({dep}).")
             break
-
-
-def _gtfs_time_to_seconds(time_str: str) -> int:
-    """Prevedie GTFS cas HH:MM:SS (HH moze byt >24) na sekundy."""
-    parts = time_str.split(":")
-    if len(parts) != 3:
-        raise ValueError(f"'{time_str}' (ocakavany format HH:MM:SS)")
-
-    h, m, s = (int(parts[0]), int(parts[1]), int(parts[2]))
-    if m < 0 or m > 59 or s < 0 or s > 59 or h < 0:
-        raise ValueError(f"'{time_str}' (neplatne hodnoty casu)")
-    return h * 3600 + m * 60 + s
 
 
 def _validate_delete(
@@ -241,7 +229,7 @@ def _validate_delete(
 ) -> None:
     """Validacia DELETE operacie."""
     table = op["table"]
-    where, params = _filter_to_where(op["filter"])
+    where, params = filter_to_where(op["filter"])
     count = conn.execute(f"SELECT COUNT(*) as c FROM {table} WHERE {where}", params).fetchone()["c"]
 
     if count == 0:

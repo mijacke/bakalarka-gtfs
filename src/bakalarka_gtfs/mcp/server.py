@@ -32,12 +32,12 @@ import traceback
 from mcp.server.fastmcp import FastMCP
 
 from bakalarka_gtfs.mcp.database import ensure_loaded, export_to_gtfs, run_query
-from bakalarka_gtfs.mcp.patching.operations import (
+from bakalarka_gtfs.mcp.patching import (
     apply_patch,
     build_diff_summary,
     parse_patch,
+    validate_patch,
 )
-from bakalarka_gtfs.mcp.patching.validation import validate_patch
 from bakalarka_gtfs.mcp.visualization.map_template import get_map_html
 
 # ---------------------------------------------------------------------------

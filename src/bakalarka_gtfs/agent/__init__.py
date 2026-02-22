@@ -16,6 +16,7 @@ Usage::
     answer = await agent.run("Koľko zastávok máme?")
 """
 
-from .agent import AgentProfiling, AgentTrace, GTFSAgent
+from .agent import GTFSAgent
+from .models import AgentProfiling, AgentTrace
 
 __all__ = ["AgentProfiling", "AgentTrace", "GTFSAgent"]
