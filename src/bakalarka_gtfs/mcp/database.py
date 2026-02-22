@@ -1,18 +1,19 @@
 """
-databaza.py — SQLite databaza pre GTFS data (singleton — jedna current.db).
+database.py — SQLite database for GTFS data (singleton — one current.db).
 
-Funkcie:
-  - ensure_loaded(feed_path)     — nacita GTFS ak DB este neexistuje
-  - get_current_db()             — cesta k aktivnej .db
-  - run_query(sql)               — read-only SELECT, default limit 500 riadkov
-  - export_to_gtfs(output_path)  — dump do CSV -> ZIP
-  - reset_db()                   — vymaze DB (pre novy chat / fresh import)
+Functions:
+  - ensure_loaded(feed_path)     — load GTFS if DB doesn't exist yet
+  - get_current_db()             — path to active .db
+  - run_query(sql)               — read-only SELECT, default limit 500 rows
+  - export_to_gtfs(output_path)  — dump to CSV -> ZIP
+  - reset_db()                   — delete DB (for new chat / fresh import)
 """
 
 from __future__ import annotations
 
 import csv
 import io
+import os
 import sqlite3
 import zipfile
 from pathlib import Path
@@ -21,7 +22,11 @@ from pathlib import Path
 # Cesty — singleton DB
 # ---------------------------------------------------------------------------
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# APP_ROOT env var: explicitne nastaveny v Docker (WORKDIR /app).
+# Fallback: 3 urovne nad tymto suborom (src/bakalarka_gtfs/mcp -> project root).
+PROJECT_ROOT = (
+    Path(os.environ.get("APP_ROOT", "")) if os.environ.get("APP_ROOT") else Path(__file__).resolve().parents[3]
+)
 WORK_DIR = PROJECT_ROOT / ".work" / "datasets"
 DB_PATH = WORK_DIR / "current.db"
 
@@ -121,8 +126,16 @@ _TABLE_COLUMNS: dict[str, list[str]] = {
     "stops": ["stop_id", "stop_name", "stop_lat", "stop_lon", "stop_code", "zone_id", "location_type"],
     "routes": ["route_id", "agency_id", "route_short_name", "route_long_name", "route_type", "route_color"],
     "calendar": [
-        "service_id", "monday", "tuesday", "wednesday", "thursday",
-        "friday", "saturday", "sunday", "start_date", "end_date",
+        "service_id",
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+        "start_date",
+        "end_date",
     ],
     "trips": ["trip_id", "route_id", "service_id", "trip_headsign", "direction_id", "shape_id"],
     "stop_times": ["trip_id", "arrival_time", "departure_time", "stop_id", "stop_sequence"],
@@ -141,14 +154,14 @@ def _create_audit_triggers(conn: sqlite3.Connection) -> None:
             record_id_expr = "NEW.shape_id || '-' || NEW.shape_pt_sequence"
             old_record_id_expr = "OLD.shape_id || '-' || OLD.shape_pt_sequence"
         else:
-            pk_col = cols[0] # V našom prípade je vždy prvý stĺpec primárny kľúč (stop_id, route_id, service_id, trip_id)
+            pk_col = cols[0]
             record_id_expr = f"NEW.{pk_col}"
             old_record_id_expr = f"OLD.{pk_col}"
 
         # JSON object expression pre old_data a new_data
         new_json_args = ", ".join(f"'{c}', NEW.{c}" for c in cols)
         old_json_args = ", ".join(f"'{c}', OLD.{c}" for c in cols)
-        
+
         new_json_expr = f"json_object({new_json_args})" if new_json_args else "NULL"
         old_json_expr = f"json_object({old_json_args})" if old_json_args else "NULL"
 
@@ -176,7 +189,7 @@ def _create_audit_triggers(conn: sqlite3.Connection) -> None:
                 INSERT INTO audit_log (table_name, operation, record_id, old_data, new_data)
                 VALUES ('{table}', 'DELETE', {old_record_id_expr}, {old_json_expr}, NULL);
             END;
-            """
+            """,
         ]
         for t_sql in triggers:
             conn.executescript(t_sql)
@@ -192,6 +205,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
 # Import
 # ---------------------------------------------------------------------------
 
+
 def _do_import(feed: Path) -> dict[str, int]:
     """Importuje GTFS CSV subory do current.db. Vrati pocty riadkov."""
     WORK_DIR.mkdir(parents=True, exist_ok=True)
@@ -200,7 +214,6 @@ def _do_import(feed: Path) -> dict[str, int]:
     create_schema(conn)
 
     tables_info: dict[str, int] = {}
-    # print(f"Importujem GTFS data z {feed} do {DB_PATH}")
 
     for txt_file, table in GTFS_TABLES.items():
         csv_path = feed / txt_file
@@ -280,6 +293,7 @@ def ensure_loaded(feed_path: str, force: bool = False) -> dict:
     # Ak je ZIP, rozbalime a najdeme GTFS subory
     if feed.suffix.lower() == ".zip":
         import tempfile
+
         tmp = Path(tempfile.mkdtemp(prefix="gtfs_"))
         with zipfile.ZipFile(feed) as zf:
             zf.extractall(tmp)
@@ -343,9 +357,7 @@ def _get_table_counts() -> dict[str, int]:
 def _check_db() -> None:
     """Kontrola, ze DB existuje."""
     if not DB_PATH.exists():
-        raise FileNotFoundError(
-            "Databaza neexistuje. Najprv zavolaj gtfs_load('data/gtfs_latest') pre nacitanie dat."
-        )
+        raise FileNotFoundError("Databaza neexistuje. Najprv zavolaj gtfs_load('data/gtfs_latest') pre nacitanie dat.")
 
 
 # ---------------------------------------------------------------------------

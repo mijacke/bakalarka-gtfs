@@ -1,10 +1,11 @@
 """
-nastavenia.py — Nastavenia GTFS agenta.
+config.py — Configuration for the GTFS agent.
 
-Načíta konfiguráciu z .env súboru alebo použije predvolené hodnoty.
+Loads settings from a .env file or uses default values.
 """
 
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()

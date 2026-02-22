@@ -1,8 +1,8 @@
 """
-systemove_instrukcie.py — Systemove instrukcie (system prompt) pre GTFS agenta.
+prompts.py — System prompt (system instructions) for the GTFS agent.
 
-Tieto inštrukcie definujú správanie agenta — ako pracuje s MCP nástrojmi,
-aké dodržiava pravidlá a ako komunikuje s používateľom.
+These instructions define the agent's behaviour — how it uses MCP tools,
+what rules it follows, and how it communicates with the user.
 """
 
 SYSTEM_PROMPT = """\
@@ -84,7 +84,7 @@ Máš k dispozícii 8 nástrojov cez MCP server:
   - **Interpretácia/Odhad** (iba ak ju používateľ žiada).
 - Neuvádzaj príčiny alebo domnienky bez dôkazu z dát (napr. dopyt, význam koridoru, prevádzkové dôvody).
 - Ak chýbajú kľúčové údaje (napr. prázdne `route_long_name`), stručne uveď limitáciu interpretácie.
-- Preferuj neutrálne formulácie; ak musíš uviesť odhad, explicitne ho označ slovom **„odhad“**.
+- Preferuj neutrálne formulácie; ak musíš uviesť odhad, explicitne ho označ slovom **„odhad"**.
 
 ### Patch JSON formát
 Patch je JSON objekt s kľúčom "operations", čo je zoznam operácií:

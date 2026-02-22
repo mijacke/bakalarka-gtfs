@@ -1,3 +1,5 @@
+name: bakalarka-gtfs
+
 services:
   gtfs-mcp:
     build:
@@ -6,7 +8,7 @@ services:
     container_name: gtfs-mcp
     env_file:
       - ./.env
-    command: ["python", "-m", "server_mcp_gtfs.server.server_tools"]
+    command: [ "python", "-m", "bakalarka_gtfs.mcp.server" ]
     restart: unless-stopped
     ports:
       - "8808:8808"
@@ -19,7 +21,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: gtfs-api
-    command: ["python", "-m", "agent_gtfs.api.api_server"]
+    command: [ "python", "-m", "bakalarka_gtfs.api.server" ]
     restart: unless-stopped
     env_file:
       - ./.env
@@ -79,7 +81,7 @@ services:
       CREDS_KEY: ${CREDS_KEY:-0123456789abcdef0123456789abcdef}
       CREDS_IV: ${CREDS_IV:-0123456789abcdef}
     volumes:
-      - ./konfiguracia/librechat/librechat.yaml:/app/librechat.yaml:ro
+      - ./config/librechat/librechat.yaml:/app/librechat.yaml:ro
       - librechat_images:/app/client/public/images
       - librechat_uploads:/app/uploads
 

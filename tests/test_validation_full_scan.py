@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from server_mcp_gtfs.databaza import databaza as db
-from server_mcp_gtfs.patchovanie.validacia import validate_patch
+from bakalarka_gtfs.mcp import database as db
+from bakalarka_gtfs.mcp.patching.validation import validate_patch
 
 
 class TestValidationFullScan(unittest.TestCase):

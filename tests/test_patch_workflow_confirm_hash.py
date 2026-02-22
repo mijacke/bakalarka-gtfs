@@ -38,7 +38,7 @@ def _install_mcp_stub() -> None:
 
 _install_mcp_stub()
 
-from server_mcp_gtfs.server import server_tools as st
+from bakalarka_gtfs.mcp import server as st  # noqa: E402 — must come after MCP stub
 
 
 class TestPatchWorkflowConfirmHash(unittest.TestCase):

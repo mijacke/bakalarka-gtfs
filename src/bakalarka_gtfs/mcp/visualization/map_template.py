@@ -3,10 +3,10 @@ import json
 
 def get_map_html(
     stops: list[dict],
-    shapes: list[dict] = None,
-    route_meta: dict = None,
-    highlight_from: int = None,
-    highlight_to: int = None,
+    shapes: list[dict] | None = None,
+    route_meta: dict | None = None,
+    highlight_from: int | None = None,
+    highlight_to: int | None = None,
 ) -> str:
     """
     Vygeneruje HTML kód pre interaktívnu mapu Leaflet.js
@@ -116,8 +116,8 @@ def get_map_html(
 </head>
 <body>
     <div class="map-title">
-        <span class="route-badge">{route_meta.get('route_short_name', '')}</span>
-        <span>{route_meta.get('title', 'GTFS Mapa')}</span>
+        <span class="route-badge">{route_meta.get("route_short_name", "")}</span>
+        <span>{route_meta.get("title", "GTFS Mapa")}</span>
     </div>
     <div id="map"></div>
     <script>

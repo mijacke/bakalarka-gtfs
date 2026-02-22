@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from server_mcp_gtfs.databaza import databaza as db
+from bakalarka_gtfs.mcp import database as db
 
 
 class TestGtfsRoundtripExport(unittest.TestCase):
@@ -82,9 +82,7 @@ class TestGtfsRoundtripExport(unittest.TestCase):
                 self.assertEqual(second["status"], "imported")
                 self.assertEqual(second["tables"]["stops"], 2)
 
-                rows = db.run_query(
-                    "SELECT stop_id, stop_name FROM stops WHERE stop_id = 'STOP_A'"
-                )
+                rows = db.run_query("SELECT stop_id, stop_name FROM stops WHERE stop_id = 'STOP_A'")
                 self.assertEqual(rows[0]["stop_name"], 'Prievoz, "most"')
 
     @staticmethod

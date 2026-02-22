@@ -1,11 +1,11 @@
 """
-agent_s_mcp.py — GTFSAgent trieda.
+agent.py — GTFSAgent class.
 
-Pripája sa na MCP server cez SSE a umožňuje editáciu GTFS dát
-cez textové príkazy. Dá sa volať z akejkoľvek Python aplikácie.
+Connects to an MCP server via SSE and allows editing of GTFS data
+through text commands. Can be called from any Python application.
 
-Použitie:
-    from agent_gtfs import GTFSAgent
+Usage:
+    from bakalarka_gtfs.agent import GTFSAgent
 
     agent = GTFSAgent()
     result = await agent.run("Koľko zastávok máme?")
@@ -19,14 +19,13 @@ import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Optional
 
 from agents import Agent, Runner
 from agents.lifecycle import RunHooksBase
 from agents.mcp import MCPServerSse
 
-from .systemove_instrukcie import SYSTEM_PROMPT
-from ..konfiguracia.nastavenia import MCP_SERVER_URL, AGENT_MODEL, AGENT_MAX_TURNS
+from ..core.config import AGENT_MAX_TURNS, AGENT_MODEL, MCP_SERVER_URL
+from .prompts import SYSTEM_PROMPT
 
 _CONFIRM_MESSAGE_PATTERN = re.compile(r"^/confirm\s+[a-fA-F0-9]{64}$")
 
@@ -73,9 +72,7 @@ class AgentTrace:
         ]
         for i, entry in enumerate(self.entries, 1):
             detail_escaped = entry.detail.replace("|", "\\|")
-            lines.append(
-                f"| {i} | {entry.elapsed:.2f}s | {entry.event} | {detail_escaped} |"
-            )
+            lines.append(f"| {i} | {entry.elapsed:.2f}s | {entry.event} | {detail_escaped} |")
         lines.append("")
         return "\n".join(lines)
 
@@ -104,9 +101,7 @@ class _TracingHooks(RunHooksBase):
 
     def _add_trace(self, event: str, detail: str) -> None:
         if self._collect_trace:
-            self._trace_entries.append(
-                TraceEntry(elapsed=self._elapsed(), event=event, detail=detail)
-            )
+            self._trace_entries.append(TraceEntry(elapsed=self._elapsed(), event=event, detail=detail))
 
     # -- Agent lifecycle ---------------------------------------------------
 
@@ -122,10 +117,7 @@ class _TracingHooks(RunHooksBase):
     async def on_llm_start(self, context, agent, system_prompt, input_items) -> None:
         self._llm_starts.append(time.perf_counter())
         items_count = len(input_items) if input_items else 0
-        self._add_trace(
-            "LLM START",
-            f"model={agent.model or 'default'}, vstupnych_poloziek={items_count}"
-        )
+        self._add_trace("LLM START", f"model={agent.model or 'default'}, vstupnych_poloziek={items_count}")
 
     async def on_llm_end(self, context, agent, response) -> None:
         if self._llm_starts:
@@ -147,10 +139,7 @@ class _TracingHooks(RunHooksBase):
             types_str = ", ".join(f"{k}={v}" for k, v in type_counts.items())
             in_tok = getattr(response.usage, "input_tokens", 0) if response.usage else 0
             out_tok = getattr(response.usage, "output_tokens", 0) if response.usage else 0
-            self._add_trace(
-                "LLM END",
-                f"vystup=[{types_str}], tokeny={in_tok}+{out_tok}"
-            )
+            self._add_trace("LLM END", f"vystup=[{types_str}], tokeny={in_tok}+{out_tok}")
 
     # -- Tool lifecycle ----------------------------------------------------
 
@@ -230,7 +219,7 @@ class GTFSAgent:
             runtime_context += (
                 "\n- CONFIRM rezim: NEROB novy propose/validate, "
                 "okamzite volaj gtfs_apply_patch presne raz.\n"
-                "- V CONFIRM rezime pouzi patch_json: \"{}\" "
+                '- V CONFIRM rezime pouzi patch_json: "{}" '
                 "(server aplikuje patch podla potvrdeneho hashu)."
             )
         return SYSTEM_PROMPT + runtime_context
@@ -285,7 +274,7 @@ class GTFSAgent:
             )
             if extra_instructions:
                 instructions += f"\n\n## Extra inštrukcie od klientskej aplikácie:\n{extra_instructions}"
-                
+
             agent = Agent(
                 name="GTFSAgent",
                 model=self.model,

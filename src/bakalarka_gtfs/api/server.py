@@ -1,14 +1,14 @@
 """
-api_server.py — OpenAI-kompatibilny API server pre GTFS agenta.
+server.py — OpenAI-compatible API server for the GTFS agent.
 
-Tento server vytvára endpoint /v1/chat/completions, ktorý je
-kompatibilný s OpenAI API formátom. Vďaka tomu ho môže LibreChat
-(alebo akákoľvek iná aplikácia) použiť ako custom endpoint.
+This server creates the /v1/chat/completions endpoint, which is
+compatible with the OpenAI API format. LibreChat (or any other
+application) can use it as a custom endpoint.
 
-Spustenie:
-    cez docker-compose service `gtfs-api`
+Startup:
+    via docker-compose service `gtfs-api`
 
-LibreChat sa pripaja na http://gtfs-api:8000/v1 (v Docker sieti).
+LibreChat connects to http://gtfs-api:8000/v1 (in the Docker network).
 """
 
 from __future__ import annotations
@@ -21,22 +21,22 @@ import re
 import time
 import uuid
 
-from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel
 from agents.exceptions import MaxTurnsExceeded
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
-from ..agent.agent_s_mcp import GTFSAgent, AgentProfiling, AgentTrace
-from ..agent.cenotvorba import vypocitaj_cenu
-from ..konfiguracia.nastavenia import (
-    API_PORT,
+from ..agent.agent import AgentProfiling, AgentTrace, GTFSAgent
+from ..agent.pricing import vypocitaj_cenu
+from ..core.config import (
+    AGENT_MAX_TURNS,
+    AGENT_MODEL,
     API_KEY,
+    API_PORT,
     CONFIRMATION_SECRET,
     ENABLE_TRACE_LOGS,
     SHOW_TIMING_FOOTER,
     SHOW_TRACE_HEADER,
-    AGENT_MAX_TURNS,
-    AGENT_MODEL,
 )
 
 # ---------------------------------------------------------------------------
@@ -96,10 +96,7 @@ def _is_authorized(request: Request) -> bool:
         return True
 
     x_api_key = request.headers.get("x-api-key")
-    if x_api_key and hmac.compare_digest(x_api_key, API_KEY):
-        return True
-
-    return False
+    return bool(x_api_key and hmac.compare_digest(x_api_key, API_KEY))
 
 
 def _unauthorized_response() -> JSONResponse:
@@ -141,7 +138,7 @@ def _format_timing_footer(profiling: AgentProfiling, prompt_tokens: int, complet
     """
     total_tokens = prompt_tokens + completion_tokens
     estimated_price = vypocitaj_cenu(AGENT_MODEL, prompt_tokens, completion_tokens)
-    
+
     return (
         "\n\n---\n"
         f"_celkový čas rozmýšľania: {profiling.thinking_seconds:.2f} s_\n"
@@ -185,10 +182,10 @@ def _build_response_headers(
     """Technické hlavičky pre tracing/latenciu bez rušenia obsahu chatu."""
     headers = {"x-gtfs-trace-id": trace_id}
     if profiling is not None:
-        headers["x-gtfs-thinking-ms"] = str(int(round(profiling.thinking_seconds * 1000)))
-        headers["x-gtfs-model-ms"] = str(int(round(profiling.model_seconds * 1000)))
-        headers["x-gtfs-db-mcp-ms"] = str(int(round(profiling.db_mcp_seconds * 1000)))
-        headers["x-gtfs-python-ms"] = str(int(round(profiling.python_overhead_seconds * 1000)))
+        headers["x-gtfs-thinking-ms"] = str(round(profiling.thinking_seconds * 1000))
+        headers["x-gtfs-model-ms"] = str(round(profiling.model_seconds * 1000))
+        headers["x-gtfs-db-mcp-ms"] = str(round(profiling.db_mcp_seconds * 1000))
+        headers["x-gtfs-python-ms"] = str(round(profiling.python_overhead_seconds * 1000))
     return headers
 
 
@@ -245,12 +242,8 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
         m.content.strip() for m in chat_request.messages if m.role == "system" and m.content
     )
 
-    # Odfiltruj system spravy — agent ma vlastne instrukcie v systemove_instrukcie.py plus tie co sme prave extrahovali
-    spravy = [
-        {"role": m.role, "content": m.content or ""}
-        for m in chat_request.messages
-        if m.role != "system"
-    ]
+    # Odfiltruj system spravy — agent ma vlastne instrukcie v prompts.py plus tie co sme prave extrahovali
+    spravy = [{"role": m.role, "content": m.content or ""} for m in chat_request.messages if m.role != "system"]
 
     if not spravy:
         spravy = [{"role": "user", "content": "Ahoj"}]
@@ -319,20 +312,16 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
         )
         error_id = uuid.uuid4().hex[:10]
         logger.exception("GTFS agent failed (error_id=%s)", error_id)
-        odpoved = (
-            "Interna chyba agenta.\n"
-            f"ID chyby: {error_id}\n"
-            "Skus poziadavku zopakovat."
-        )
+        odpoved = f"Interna chyba agenta.\nID chyby: {error_id}\nSkus poziadavku zopakovat."
 
     if chat_request.stream:
         _trace_log(
             "GTFS chat thinking_done trace_id=%s thinking_ms=%d model_ms=%d db_mcp_ms=%d python_ms=%d",
             trace_id,
-            int(round(profiling.thinking_seconds * 1000)),
-            int(round(profiling.model_seconds * 1000)),
-            int(round(profiling.db_mcp_seconds * 1000)),
-            int(round(profiling.python_overhead_seconds * 1000)),
+            round(profiling.thinking_seconds * 1000),
+            round(profiling.model_seconds * 1000),
+            round(profiling.db_mcp_seconds * 1000),
+            round(profiling.python_overhead_seconds * 1000),
         )
         return StreamingResponse(
             _stream_odpoved(
@@ -368,10 +357,10 @@ async def chat_completions(chat_request: ChatRequest, request: Request):
     _trace_log(
         "GTFS chat done trace_id=%s thinking_ms=%d model_ms=%d db_mcp_ms=%d python_ms=%d stream=%s",
         trace_id,
-        int(round(profiling.thinking_seconds * 1000)),
-        int(round(profiling.model_seconds * 1000)),
-        int(round(profiling.db_mcp_seconds * 1000)),
-        int(round(profiling.python_overhead_seconds * 1000)),
+        round(profiling.thinking_seconds * 1000),
+        round(profiling.model_seconds * 1000),
+        round(profiling.db_mcp_seconds * 1000),
+        round(profiling.python_overhead_seconds * 1000),
         chat_request.stream,
     )
 
@@ -459,10 +448,10 @@ async def _stream_odpoved(
     _trace_log(
         "GTFS chat stream_done trace_id=%s thinking_ms=%d model_ms=%d db_mcp_ms=%d python_ms=%d",
         trace_id,
-        int(round(profiling.thinking_seconds * 1000)),
-        int(round(profiling.model_seconds * 1000)),
-        int(round(profiling.db_mcp_seconds * 1000)),
-        int(round(profiling.python_overhead_seconds * 1000)),
+        round(profiling.thinking_seconds * 1000),
+        round(profiling.model_seconds * 1000),
+        round(profiling.db_mcp_seconds * 1000),
+        round(profiling.python_overhead_seconds * 1000),
     )
 
     # Finálny chunk
@@ -489,7 +478,7 @@ def main():
     """Spustí API server."""
     import uvicorn
 
-    print(f"GTFS Agent API server")
+    print("GTFS Agent API server")
     print(f"   Endpoint: http://localhost:{API_PORT}/v1/chat/completions")
     print(f"   Modely:   http://localhost:{API_PORT}/v1/models")
     print(f"   Health:   http://localhost:{API_PORT}/health")

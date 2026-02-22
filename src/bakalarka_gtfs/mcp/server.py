@@ -1,20 +1,22 @@
 """
-server_tools.py — FastMCP server so 6 GTFS tools, SSE transport.
+server.py — FastMCP server with GTFS tools, SSE transport.
 
-Singleton databaza — vsetky nastroje pracuju s jednou current.db.
-Prvy volany tool by mal byt gtfs_load, ktory naimportuje GTFS data
-ak DB este neexistuje.
+Singleton database — all tools work with one current.db.
+The first tool called should be gtfs_load, which imports GTFS data
+if the DB doesn't exist yet.
 
-Spustenie:
-    cez docker-compose service `gtfs-mcp`
+Startup:
+    via docker-compose service `gtfs-mcp`
 
 Tools:
-    1. gtfs_load          — import GTFS CSV dir -> SQLite (reuse ak uz existuje)
+    1. gtfs_load          — import GTFS CSV dir -> SQLite (reuse if exists)
     2. gtfs_query          — read-only SQL SELECT
-    3. gtfs_propose_patch  — diff/preview navrhovanych zmien
+    3. gtfs_propose_patch  — diff/preview of proposed changes
     4. gtfs_validate_patch — FK, time ordering, required fields
-    5. gtfs_apply_patch    — aplikacia zmien (atomic transakcia, signed confirm)
+    5. gtfs_apply_patch    — apply changes (atomic transaction, signed confirm)
     6. gtfs_export         — export SQLite -> GTFS ZIP
+    7. gtfs_get_history    — audit log
+    8. gtfs_show_map       — interactive map widget
 """
 
 from __future__ import annotations
@@ -29,14 +31,14 @@ import traceback
 
 from mcp.server.fastmcp import FastMCP
 
-from server_mcp_gtfs.databaza.databaza import ensure_loaded, run_query, export_to_gtfs
-from server_mcp_gtfs.patchovanie.operacie_patchu import (
-    parse_patch,
-    build_diff_summary,
+from bakalarka_gtfs.mcp.database import ensure_loaded, export_to_gtfs, run_query
+from bakalarka_gtfs.mcp.patching.operations import (
     apply_patch,
+    build_diff_summary,
+    parse_patch,
 )
-from server_mcp_gtfs.patchovanie.validacia import validate_patch
-from server_mcp_gtfs.vizualizacia.map_template import get_map_html
+from bakalarka_gtfs.mcp.patching.validation import validate_patch
+from bakalarka_gtfs.mcp.visualization.map_template import get_map_html
 
 # ---------------------------------------------------------------------------
 # Server
@@ -76,9 +78,7 @@ def _cleanup_patch_states() -> None:
     """Odstrani expirovane stavy patchov."""
     now = time.time()
     expired_keys = [
-        key
-        for key, value in _PATCH_STATES.items()
-        if now - value.get("created_at", now) > PATCH_STATE_TTL_SECONDS
+        key for key, value in _PATCH_STATES.items() if now - value.get("created_at", now) > PATCH_STATE_TTL_SECONDS
     ]
     for key in expired_keys:
         _PATCH_STATES.pop(key, None)
@@ -181,7 +181,7 @@ def gtfs_load(feed_path: str, force: bool = False) -> str:
     try:
         result = ensure_loaded(feed_path, force=force)
         return _json_response(result)
-    except Exception as e:
+    except Exception:
         return _error_response("Chyba pri nacitani GTFS", traceback.format_exc())
 
 
@@ -354,8 +354,6 @@ def gtfs_apply_patch(
         if not confirmation_ok:
             return _error_response("Missing or invalid confirmation", detail)
 
-        # Pouzi presne patch ulozeny pri propose kroku, aby apply nepadol
-        # na rozdieloch v patch_json serializacii medzi volaniami.
         state_patch = state.get("patch")
         if not isinstance(state_patch, dict):
             return _error_response(
@@ -368,7 +366,6 @@ def gtfs_apply_patch(
             parsed_apply_patch = parse_patch(patch_json)
             parsed_apply_hash = _patch_hash(parsed_apply_patch)
         except Exception:
-            # apply prebehne podla potvrdeneho hashu a ulozeneho patchu z propose
             pass
         if parsed_apply_hash and parsed_apply_hash != confirmed_hash:
             state["apply_patch_mismatch"] = True
@@ -415,10 +412,10 @@ def gtfs_export(output_path: str) -> str:
 def gtfs_get_history(limit: int = 50) -> str:
     """
     Ziska historiu zmien (audit log) vykonanych nad GTFS databazou.
-    
+
     Args:
         limit: Maximalny pocet predchadzajucich zaznamov na zobrazenie (predvolene 50).
-        
+
     Returns:
         JSON pole zaznamov zoradenych od najnovsich.
     """
@@ -437,10 +434,10 @@ def gtfs_get_history(limit: int = 50) -> str:
 
 @mcp.tool()
 def gtfs_show_map(
-    route_id: str = None,
-    trip_id: str = None,
-    from_stop_id: str = None,
-    to_stop_id: str = None,
+    route_id: str | None = None,
+    trip_id: str | None = None,
+    from_stop_id: str | None = None,
+    to_stop_id: str | None = None,
     show_all_stops: bool = False,
 ) -> str:
     """
@@ -450,7 +447,7 @@ def gtfs_show_map(
     A) show_all_stops=True: Zobrazí všetky zastávky v databáze na mape (ignoruje route_id/trip_id).
     B) trip_id: Zobrazí konkrétny trip a jeho zastávky.
     C) route_id: Zobrazí cestu s najvyšším počtom zastávok pre danú linku.
-    D) route_id + from_stop_id + to_stop_id: Nájde trip na tejto linke, 
+    D) route_id + from_stop_id + to_stop_id: Nájde trip na tejto linke,
        ktorý obsahuje obe zastávky v správnom poradí, a zobrazí len úsek medzi nimi.
 
     Args:
@@ -481,7 +478,6 @@ def gtfs_show_map(
                 return _error_response("Prázdna databáza", "V databáze nie sú žiadne zastávky.")
 
             # Kompaktný formát: [[lat,lon,name], ...] — menšie než pole objektov
-            import json
             compact = json.dumps(
                 [[s["lat"], s["lon"], s["name"]] for s in stops],
                 ensure_ascii=False,
@@ -581,7 +577,9 @@ m.fitBounds(b,{{padding:[30,30]}});
 
                     from_name = stops[highlight_from]["name"] if highlight_from is not None else ""
                     to_name = stops[highlight_to]["name"] if highlight_to is not None else ""
-                    route_meta["title"] = f"Linka {route_meta.get('route_short_name', route_id)}: {from_name} → {to_name}"
+                    route_meta["title"] = (
+                        f"Linka {route_meta.get('route_short_name', route_id)}: {from_name} → {to_name}"
+                    )
 
                     html = get_map_html(
                         stops=stops,
@@ -669,11 +667,7 @@ m.fitBounds(b,{{padding:[30,30]}});
 
         html = get_map_html(stops=stops, shapes=shapes, route_meta=route_meta)
         artifact_id = f"gtfs-map-{route_id or trip_id}"
-        return (
-            f':::artifact{{identifier="{artifact_id}" type="text/html" title="{title}"}}\n'
-            f"```html\n{html}\n```\n"
-            ":::"
-        )
+        return f':::artifact{{identifier="{artifact_id}" type="text/html" title="{title}"}}\n```html\n{html}\n```\n:::'
     except Exception as e:
         return _error_response(str(e), traceback.format_exc())
 

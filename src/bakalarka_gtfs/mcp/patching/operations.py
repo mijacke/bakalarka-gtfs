@@ -1,12 +1,12 @@
 """
-operacie_patchu.py — Patch JSON schema, diff summary builder, transformy.
+operations.py — Patch JSON schema, diff summary builder, transforms.
 
-Patch je zoznam operacii (update / delete / insert) nad GTFS tabulkami.
-Tento modul:
-  - parsuje a validuje patch JSON strukturu,
-  - generuje before/after diff preview,
-  - aplikuje transformy (time_add),
-  - vykonava mutacie v SQLite transakcii.
+A Patch is a list of operations (update / delete / insert) on GTFS tables.
+This module:
+  - parses and validates patch JSON structure,
+  - generates before/after diff preview,
+  - applies transforms (time_add),
+  - executes mutations in an SQLite transaction.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import re
 import sqlite3
 from typing import Any
 
-from ..databaza.databaza import get_current_db, _check_db
+from ..database import _check_db, get_current_db
 
 # ---------------------------------------------------------------------------
 # Patch JSON schema types
@@ -47,9 +47,7 @@ def _validate_operation(op: dict, idx: int) -> None:
     if "table" not in op:
         raise ValueError(f"{prefix}: chyba 'table'.")
     if op["table"] not in VALID_TABLES:
-        raise ValueError(
-            f"{prefix}: neplatna tabulka '{op['table']}'. Povolene: {VALID_TABLES}"
-        )
+        raise ValueError(f"{prefix}: neplatna tabulka '{op['table']}'. Povolene: {VALID_TABLES}")
 
     if op["op"] in ("update", "delete") and "filter" not in op:
         raise ValueError(f"{prefix}: operacia '{op['op']}' vyzaduje 'filter'.")
@@ -325,9 +323,7 @@ def _apply_update(conn: sqlite3.Connection, op: dict) -> int:
     set_spec = op["set"]
     where, params = _filter_to_where(flt)
 
-    has_transforms = any(
-        isinstance(v, dict) and "transform" in v for v in set_spec.values()
-    )
+    has_transforms = any(isinstance(v, dict) and "transform" in v for v in set_spec.values())
 
     if not has_transforms:
         set_parts = []
@@ -343,10 +339,7 @@ def _apply_update(conn: sqlite3.Connection, op: dict) -> int:
     else:
         select_sql = f"SELECT rowid, * FROM {table} WHERE {where}"
         rows = conn.execute(select_sql, params).fetchall()
-        col_names = [
-            desc[0]
-            for desc in conn.execute(f"SELECT * FROM {table} LIMIT 0").description
-        ]
+        col_names = [desc[0] for desc in conn.execute(f"SELECT * FROM {table} LIMIT 0").description]
         count = 0
         for row in rows:
             rowid = row[0]
@@ -365,7 +358,7 @@ def _apply_update(conn: sqlite3.Connection, op: dict) -> int:
                 set_params.append(new_val)
 
             sql = f"UPDATE {table} SET {', '.join(set_parts)} WHERE rowid = ?"
-            conn.execute(sql, set_params + [rowid])
+            conn.execute(sql, [*set_params, rowid])
             count += 1
         return count
 

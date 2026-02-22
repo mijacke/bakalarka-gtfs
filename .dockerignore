@@ -2,6 +2,7 @@
 .gitignore
 .venv
 .work
+.uv-cache
 __pycache__
 *.pyc
 *.db
@@ -9,4 +10,8 @@ dist
 build
 *.egg-info
 uv.lock
-konfiguracia/librechat/.env
+docs
+experiments
+tests
+.dev-activity.log
+.DS_Store

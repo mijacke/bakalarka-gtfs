@@ -1,19 +1,19 @@
 """
-validacia.py — Validacia GTFS patchu pred aplikaciou.
+validation.py — Validation of a GTFS patch before application.
 
-Kontroly:
-  - FK integrita (napr. route_id v trips musi existovat v routes)
-  - casove usporiadanie stop_times (arrival <= departure)
-  - povinne stlpce pri inserte
-  - upozornenie ak filter matchuje 0 riadkov
+Checks:
+  - FK integrity (e.g. route_id in trips must exist in routes)
+  - time ordering for stop_times (arrival <= departure)
+  - required fields on insert
+  - warning if filter matches 0 rows
 """
 
 from __future__ import annotations
 
 import sqlite3
 
-from ..databaza.databaza import get_current_db, _check_db
-from .operacie_patchu import _filter_to_where, _apply_transform
+from ..database import _check_db, get_current_db
+from .operations import _apply_transform, _filter_to_where
 
 # ---------------------------------------------------------------------------
 # FK relacie medzi GTFS tabulkami
@@ -79,7 +79,7 @@ def validate_patch(patch_json: dict) -> dict:
     try:
         for i, op in enumerate(patch_json["operations"]):
             prefix = f"Op#{i + 1} ({op['op']} {op['table']})"
-            table = op["table"]
+            op["table"]
             op_type = op["op"]
 
             if op_type == "insert":
@@ -118,9 +118,7 @@ def _validate_insert(
     for j, row in enumerate(rows):
         for field in required:
             if field not in row or row[field] is None or str(row[field]).strip() == "":
-                errors.append(
-                    f"{prefix} row#{j + 1}: chyba povinny stlpec '{field}'."
-                )
+                errors.append(f"{prefix} row#{j + 1}: chyba povinny stlpec '{field}'.")
 
     fk_checks = _FK_RELATIONS.get(table, [])
     for j, row in enumerate(rows):
@@ -132,10 +130,7 @@ def _validate_insert(
                     [val],
                 ).fetchone()
                 if not exists:
-                    errors.append(
-                        f"{prefix} row#{j + 1}: FK chyba — "
-                        f"{col}='{val}' neexistuje v {ref_table}.{ref_col}."
-                    )
+                    errors.append(f"{prefix} row#{j + 1}: FK chyba — {col}='{val}' neexistuje v {ref_table}.{ref_col}.")
 
 
 def _validate_update(
@@ -151,9 +146,7 @@ def _validate_update(
     set_spec = op["set"]
 
     where, params = _filter_to_where(flt)
-    count = conn.execute(
-        f"SELECT COUNT(*) as c FROM {table} WHERE {where}", params
-    ).fetchone()["c"]
+    count = conn.execute(f"SELECT COUNT(*) as c FROM {table} WHERE {where}", params).fetchone()["c"]
 
     if count == 0:
         warnings.append(f"{prefix}: filter matchuje 0 riadkov.")
@@ -170,10 +163,7 @@ def _validate_update(
                 [val],
             ).fetchone()
             if not exists:
-                errors.append(
-                    f"{prefix}: FK chyba — "
-                    f"{col}='{val}' neexistuje v {ref_table}.{ref_col}."
-                )
+                errors.append(f"{prefix}: FK chyba — {col}='{val}' neexistuje v {ref_table}.{ref_col}.")
 
     if table == "stop_times":
         _validate_time_ordering(conn, op, prefix, errors, warnings)
@@ -226,9 +216,7 @@ def _validate_time_ordering(
             break
 
         if arr_seconds is not None and dep_seconds is not None and arr_seconds > dep_seconds:
-            errors.append(
-                f"{prefix}: po update arrival_time ({arr}) > departure_time ({dep})."
-            )
+            errors.append(f"{prefix}: po update arrival_time ({arr}) > departure_time ({dep}).")
             break
 
 
@@ -254,42 +242,30 @@ def _validate_delete(
     """Validacia DELETE operacie."""
     table = op["table"]
     where, params = _filter_to_where(op["filter"])
-    count = conn.execute(
-        f"SELECT COUNT(*) as c FROM {table} WHERE {where}", params
-    ).fetchone()["c"]
+    count = conn.execute(f"SELECT COUNT(*) as c FROM {table} WHERE {where}", params).fetchone()["c"]
 
     if count == 0:
         warnings.append(f"{prefix}: filter matchuje 0 riadkov, nic sa nezmaze.")
 
     # Pri zapnutych FK by tieto operacie pri aplikacii aj tak zlyhali.
     if table == "trips":
-        affected_trip_ids = conn.execute(
-            f"SELECT trip_id FROM trips WHERE {where}", params
-        ).fetchall()
+        affected_trip_ids = conn.execute(f"SELECT trip_id FROM trips WHERE {where}", params).fetchall()
         for row in affected_trip_ids:
             ref_count = conn.execute(
                 "SELECT COUNT(*) as c FROM stop_times WHERE trip_id = ?",
                 [row["trip_id"]],
             ).fetchone()["c"]
             if ref_count > 0:
-                errors.append(
-                    f"{prefix}: mazanie trip_id='{row['trip_id']}' blokuje "
-                    f"{ref_count} riadkov v stop_times."
-                )
+                errors.append(f"{prefix}: mazanie trip_id='{row['trip_id']}' blokuje {ref_count} riadkov v stop_times.")
 
     if table in ("routes", "calendar"):
         child_table = "trips"
         col = "route_id" if table == "routes" else "service_id"
-        affected_ids = conn.execute(
-            f"SELECT {col} FROM {table} WHERE {where}", params
-        ).fetchall()
+        affected_ids = conn.execute(f"SELECT {col} FROM {table} WHERE {where}", params).fetchall()
         for row in affected_ids:
             ref_count = conn.execute(
                 f"SELECT COUNT(*) as c FROM {child_table} WHERE {col} = ?",
                 [row[col]],
             ).fetchone()["c"]
             if ref_count > 0:
-                errors.append(
-                    f"{prefix}: mazanie {col}='{row[col]}' blokuje "
-                    f"{ref_count} riadkov v {child_table}."
-                )
+                errors.append(f"{prefix}: mazanie {col}='{row[col]}' blokuje {ref_count} riadkov v {child_table}.")
